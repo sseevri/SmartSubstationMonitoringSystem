@@ -5,6 +5,9 @@ import json
 from cryptography.fernet import Fernet
 import pandas as pd
 import os
+import csv
+import io
+from shared_config import REGISTER_MAP
 
 # Load encryption key from file
 KEY_FILE = '/home/sseevri/SmartSubstationMonitoringSystem/config_key.key'
@@ -26,19 +29,8 @@ logging.basicConfig(
     filename=config['log_file']
 )
 
-REGISTER_NAMES = [
-    "Watts Total", "Watts R phase", "Watts Y phase", "Watts B phase",
-    "VAR Total", "VAR R phase", "VAR Y phase", "VAR B phase",
-    "PF Avg (instant)", "PF R phase", "PF Y phase", "PF B phase",
-    "VA Total", "VA R phase", "VA Y phase", "VA B phase",
-    "VLL Average", "Vry Phase", "Vyb Phase", "Vbr Phase",
-    "VLN Average", "V R phase", "V Y phase", "V B phase",
-    "Current Total", "Current R phase", "Current Y phase", "Current B phase",
-    "Frequency", "Wh Received (Import)", "VAh Received (Import)",
-    "VARh Ind Received (Import)", "VARh Cap Received (Import)",
-    "Wh Delivered", "VAh Delivered", "VARh Ind Delivered",
-    "VARh Cap Delivered", "PF Average Received"
-]
+REGISTER_NAMES = [item[0] for item in REGISTER_MAP]
+last_cleanup_date = None
 
 def init_db(db_path):
     """Initialize SQLite database (1-year) with monthly retention cleanup."""
@@ -87,6 +79,7 @@ def init_daily_db(db_path):
 
 def log_to_db(db_path, date, time_str, meter_id, data):
     """Log meter data to SQLite (1-year) with monthly retention cleanup."""
+    global last_cleanup_date
     try:
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
@@ -101,12 +94,17 @@ def log_to_db(db_path, date, time_str, meter_id, data):
         VALUES ({placeholders})
         """
         cursor.execute(insert_sql, values)
-        # Monthly retention cleanup
-        if datetime.now().day == 1:
-            cutoff_time = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d %H:%M:%S')
+        
+        # Monthly retention cleanup - runs only once on the first day of the month
+        now = datetime.now()
+        if now.day == 1 and (last_cleanup_date is None or last_cleanup_date != now.date()):
+            cutoff_time = (now - timedelta(days=365)).strftime('%Y-%m-%d %H:%M:%S')
             cursor.execute("DELETE FROM meter_readings WHERE DateTime < ?", (cutoff_time,))
             deleted_rows = cursor.rowcount
-            logging.info(f"Deleted {deleted_rows} records older than 1 year from {db_path}")
+            if deleted_rows > 0:
+                logging.info(f"Deleted {deleted_rows} records older than 1 year from {db_path}")
+            last_cleanup_date = now.date()
+
         conn.commit()
     except sqlite3.Error as e:
         logging.error(f"Database logging error (1-year): {e}")
@@ -183,18 +181,16 @@ def get_yesterday_data(db_path):
         return pd.DataFrame()
 
 def get_today_data(db_path):
-    """Fetch data for today (00:00:00 to now) from daily database."""
+    """Fetch data for today from the database."""
     try:
         conn = sqlite3.connect(db_path)
-        today = datetime.now().date()
-        start_time = f"{today} 00:00:00"
-        end_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        query = f"""
+        today = datetime.now().date().strftime('%Y-%m-%d')
+        query = """
         SELECT DateTime, Date, Time, Meter_ID, "VLL Average", "Current Total", "Watts Total", "PF Average Received"
         FROM meter_readings
-        WHERE DateTime BETWEEN ? AND ?
+        WHERE DATE(DateTime) = ?
         """
-        df = pd.read_sql_query(query, conn, params=(start_time, end_time))
+        df = pd.read_sql_query(query, conn, params=(today,))
         conn.close()
         # Ensure non-negative values
         for col in ["VLL Average", "Current Total", "Watts Total", "PF Average Received"]:
@@ -206,17 +202,39 @@ def get_today_data(db_path):
         return pd.DataFrame()
 
 def export_to_csv(db_path):
-    """Export entire 1-year database to CSV string with Date and Time fields."""
+    """Export entire 1-year database to CSV string using a streaming approach."""
     try:
         conn = sqlite3.connect(db_path)
-        query = "SELECT * FROM meter_readings"
-        df = pd.read_sql_query(query, conn)
-        conn.close()
-        # Ensure non-negative values
-        for col in df.columns:
-            if col not in ['DateTime', 'Date', 'Time', 'Meter_ID']:
-                df[col] = df[col].clip(lower=0)
-        return df.to_csv(index=False)
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM meter_readings")
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write headers
+        headers = [description[0] for description in cursor.description]
+        writer.writerow(headers)
+        
+        # Write rows in chunks
+        while True:
+            rows = cursor.fetchmany(1000)
+            if not rows:
+                break
+            
+            processed_rows = []
+            for row in rows:
+                processed_row = list(row)
+                for i, col in enumerate(headers):
+                    if col not in ['DateTime', 'Date', 'Time', 'Meter_ID'] and isinstance(processed_row[i], (int, float)):
+                        if processed_row[i] < 0:
+                            processed_row[i] = 0
+                processed_rows.append(processed_row)
+            writer.writerows(processed_rows)
+            
+        return output.getvalue()
     except sqlite3.Error as e:
         logging.error(f"Error exporting database to CSV: {e}")
         return None
+    finally:
+        if conn:
+            conn.close()

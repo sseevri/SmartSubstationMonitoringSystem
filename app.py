@@ -4,7 +4,6 @@ from dash.dependencies import Input, Output, State
 import pandas as pd
 import plotly.express as px
 import dash_bootstrap_components as dbc
-import dash_auth
 import json
 from datetime import datetime, timedelta
 from cryptography.fernet import Fernet
@@ -14,10 +13,10 @@ import numpy as np
 import warnings
 from datalogger import get_yesterday_data, get_today_data, export_to_csv
 
-# Suppress FutureWarning from Plotly
+# Suppress Plotly FutureWarning
 warnings.filterwarnings("ignore", category=FutureWarning)
 
-# Load encryption key from file
+# Load encryption key
 KEY_FILE = '/home/sseevri/SmartSubstationMonitoringSystem/config_key.key'
 if not os.path.exists(KEY_FILE):
     raise FileNotFoundError(f"Encryption key file {KEY_FILE} not found. Run encrypt_config.py first.")
@@ -37,17 +36,14 @@ audit_handler = logging.FileHandler(config['audit_log_file'])
 audit_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 audit_logger.addHandler(audit_handler)
 
-# Initialize the Dash app
-app = Dash(__name__, suppress_callback_exceptions=True, external_stylesheets=[dbc.themes.BOOTSTRAP])
-
-# Set Flask secret key for session management
+# Initialize Dash app
+app = Dash(__name__, suppress_callback_exceptions=True, external_stylesheets=[dbc.themes.BOOTSTRAP, '/assets/voltmeter.css'])
 app.server.config['SECRET_KEY'] = os.urandom(24).hex()
 
-# Basic authentication
+# Basic authentication credentials
 VALID_USERNAME_PASSWORD_PAIRS = config['dashboard_auth']
-auth = dash_auth.BasicAuth(app, VALID_USERNAME_PASSWORD_PAIRS)
 
-# Define meter names
+# Meter names
 meter_names = {
     1: "Transformer",
     2: "EssentialLoad",
@@ -56,7 +52,7 @@ meter_names = {
     5: "DGSetLoad"
 }
 
-# Define RYB-inspired color palette
+# Color palette
 RYB_COLORS = {
     "red": "#E34234",
     "yellow": "#FFD700",
@@ -69,35 +65,21 @@ RYB_COLORS = {
     "dark_bg": "#343a40"
 }
 
-# Map parameters to phase colors
+# Phase colors
 PHASE_COLORS = {
-    "Watts R phase": "red",
-    "Watts Y phase": "yellow",
-    "Watts B phase": "blue",
-    "VAR R phase": "red",
-    "VAR Y phase": "yellow",
-    "VAR B phase": "blue",
-    "PF R phase": "red",
-    "PF Y phase": "yellow",
-    "PF B phase": "blue",
-    "VA R phase": "red",
-    "VA Y phase": "yellow",
-    "VA B phase": "blue",
-    "Vry Phase": "red",
-    "Vyb Phase": "yellow",
-    "Vbr Phase": "blue",
-    "V R phase": "red",
-    "V Y phase": "yellow",
-    "V B phase": "blue",
-    "Current R phase": "red",
-    "Current Y phase": "yellow",
-    "Current B phase": "blue"
+    "Watts R phase": "red", "Watts Y phase": "yellow", "Watts B phase": "blue",
+    "VAR R phase": "red", "VAR Y phase": "yellow", "VAR B phase": "blue",
+    "PF R phase": "red", "PF Y phase": "yellow", "PF B phase": "blue",
+    "VA R phase": "red", "VA Y phase": "yellow", "VA B phase": "blue",
+    "Vry Phase": "blue", "Vyb Phase": "yellow", "Vbr Phase": "red",
+    "V R phase": "red", "V Y phase": "yellow", "V B phase": "blue",
+    "Current R phase": "red", "Current Y phase": "yellow", "Current B phase": "blue"
 }
 
-# --- Data Loading Functions ---
+# Load CSV data
 def load_latest_csv_data():
-    """Loads the latest data from CSV with 1-hour retention."""
     csv_file = config['csv_file']
+    audit_logger.info(f"Attempting to load CSV from: {csv_file}")
     try:
         if not os.path.exists(csv_file):
             audit_logger.error(f"CSV file {csv_file} does not exist")
@@ -106,17 +88,27 @@ def load_latest_csv_data():
             audit_logger.error(f"CSV file {csv_file} is empty")
             return pd.DataFrame()
         df = pd.read_csv(csv_file)
+        audit_logger.info(f"Type of df after pd.read_csv: {type(df)}")
+        if not isinstance(df, pd.DataFrame):
+            audit_logger.error(f"pd.read_csv did not return a DataFrame for {csv_file}. Type: {type(df)}")
+            return pd.DataFrame()
         if df.empty:
             audit_logger.error(f"CSV file {csv_file} contains no data")
             return pd.DataFrame()
+        audit_logger.info(f"Type of df before empty check in load_latest_csv_data: {type(df)}")
         df['DateTime'] = pd.to_datetime(df['Date'] + ' ' + df['Time'])
         cutoff_time = datetime.now() - timedelta(hours=1)
         df = df[df['DateTime'] >= cutoff_time]
-        # Ensure non-negative values
         for col in df.columns:
             if col not in ['Date', 'Time', 'DateTime', 'Meter_ID', 'comm_status', 'status']:
-                df[col] = df[col].astype(float).clip(lower=0)
+                audit_logger.info(f"Type of df[{col}]: {type(df[col])}")
+                if df[col].dtype == 'object':
+                    try:
+                        df[col] = pd.to_datetime(df[col])
+                    except ValueError:
+                        pass
         audit_logger.info(f"Successfully loaded CSV data from {csv_file}")
+        audit_logger.info(f"Returning df from load_latest_csv_data: {df.head()}")
         return df
     except pd.errors.EmptyDataError:
         audit_logger.error(f"CSV load error: No columns to parse from file {csv_file}")
@@ -125,10 +117,28 @@ def load_latest_csv_data():
         audit_logger.error(f"CSV load error: {e}")
         return pd.DataFrame()
 
-# --- Layouts ---
+# Layouts
+login_layout = html.Div([
+    html.Div([
+        html.Img(src='/assets/Vridhachalam.png', style={'position': 'fixed', 'top': 0, 'left': 0, 'width': '100%', 'height': '100%', 'z-index': -1, 'opacity': 0.2}),
+        html.Div([
+            html.H2("Smart Substation Monitoring", className="text-center text-white"),
+            dbc.Card([
+                dbc.CardBody([
+                    dbc.Input(id="login-username", placeholder="Username", type="text", className="mb-3"),
+                    dbc.Input(id="login-password", placeholder="Password", type="password", className="mb-3"),
+                    dbc.Button("Login", id="login-button", color="primary", className="w-100"),
+                    html.Div(id="login-output", className="text-danger mt-2 text-center")
+                ])
+            ], className="shadow-lg p-4 bg-dark bg-opacity-75", style={'max-width': '400px', 'margin': 'auto', 'border-radius': '10px'})
+        ], className="d-flex justify-content-center align-items-center min-vh-100")
+    ], className="login-page")
+], style={'background-color': '#000', 'position': 'relative'})
+
 navbar = dbc.NavbarSimple(
+    id='main-navbar',
     children=[
-        dbc.NavItem(dbc.NavLink("Home", href="/")),
+        dbc.NavItem(dbc.NavLink("Home", href="/", style={'color': 'white', 'fontWeight': 'bold'})),
         dbc.DropdownMenu(
             children=[
                 dbc.DropdownMenuItem(f"{meter_names[mid]} (ID: {mid})", href=f"/meter/{mid}")
@@ -136,11 +146,11 @@ navbar = dbc.NavbarSimple(
             ],
             nav=True,
             in_navbar=True,
-            label="Meter Pages",
+            label=html.Span("Meter Pages", style={'color': 'white', 'fontWeight': 'bold'}),
         ),
         dbc.NavItem(dbc.Switch(id="theme-toggle", label="Dark Theme", value=False)),
     ],
-    brand="Smart Substation Monitoring",
+    brand=html.Span("Smart Substation Monitoring", style={'color': 'white', 'fontWeight': 'bold'}),
     brand_href="/",
     color="primary",
     dark=True,
@@ -149,12 +159,13 @@ navbar = dbc.NavbarSimple(
 
 main_layout = dbc.Container([
     navbar,
-    html.H1("Dashboard Overview", className="text-center my-4", style={'color': RYB_COLORS['dark_text']}),
+    dbc.Row([
+        dbc.Col(html.Img(src='/assets/southern_railway.png', height='100px'), width=2, className="text-start"),
+        dbc.Col(html.H1("Dashboard Overview", className="text-center my-4"), width=8),
+        dbc.Col(html.Img(src='/assets/Indian Railway Logo.jpg', height='100px'), width=2, className="text-end")
+    ], align="center"),
     dcc.Store(id='theme-store', storage_type='local'),
     dcc.Store(id='selected-meters', data=[1, 2, 3, 4, 5]),
-    # Temporarily disable session timeout
-    # dcc.Store(id='session-timestamp', storage_type='session'),
-    # html.Div(id='session-timeout-message', style={'display': 'none'}),
     dbc.Row([
         dbc.Col(
             dbc.Card([
@@ -201,24 +212,18 @@ main_layout = dbc.Container([
                     )
                 ]),
                 dbc.CardBody([
-                    html.Div([
-                        dbc.Button("Show/Hide Yesterday's Charts", id="collapse-yesterday-button", className="mb-2"),
-                        dbc.Collapse([
-                            dcc.Graph(id='yesterday-chart-vll'),
-                            dcc.Graph(id='yesterday-chart-current'),
-                            dcc.Graph(id='yesterday-chart-watts'),
-                            dcc.Graph(id='yesterday-chart-pf'),
-                        ], id="collapse-yesterday", is_open=True)
+                    dbc.Row([
+                        dbc.Col(dbc.Button("Show/Hide Yesterday's Charts", id="collapse-yesterday-button", className="mb-2"), width=6),
+                        dbc.Col(dbc.Button("Show/Hide Today's Charts", id="collapse-today-button", className="mb-2"), width=6)
                     ]),
-                    html.Div([
-                        dbc.Button("Show/Hide Today's Charts", id="collapse-today-button", className="mb-2"),
-                        dbc.Collapse([
-                            dcc.Graph(id='today-chart-vll'),
-                            dcc.Graph(id='today-chart-current'),
-                            dcc.Graph(id='today-chart-watts'),
-                            dcc.Graph(id='today-chart-pf'),
-                        ], id="collapse-today", is_open=True)
-                    ])
+                    dbc.Collapse(dcc.Graph(id='yesterday-chart-vll'), id="collapse-yesterday-vll", is_open=True),
+                    dbc.Collapse(dcc.Graph(id='today-chart-vll'), id="collapse-today-vll", is_open=True),
+                    dbc.Collapse(dcc.Graph(id='yesterday-chart-current'), id="collapse-yesterday-current", is_open=True),
+                    dbc.Collapse(dcc.Graph(id='today-chart-current'), id="collapse-today-current", is_open=True),
+                    dbc.Collapse(dcc.Graph(id='yesterday-chart-watts'), id="collapse-yesterday-watts", is_open=True),
+                    dbc.Collapse(dcc.Graph(id='today-chart-watts'), id="collapse-today-watts", is_open=True),
+                    dbc.Collapse(dcc.Graph(id='yesterday-chart-pf'), id="collapse-yesterday-pf", is_open=True),
+                    dbc.Collapse(dcc.Graph(id='today-chart-pf'), id="collapse-today-pf", is_open=True)
                 ])
             ], className="shadow-sm"),
             md=12, className="mb-4"
@@ -226,87 +231,177 @@ main_layout = dbc.Container([
     ]),
     dcc.Interval(
         id='interval-component-csv',
-        interval=10*1000,  # Increased to 10s to reduce load
+        interval=10*1000,  # 10s for CSV updates
         n_intervals=0
     ),
     dcc.Interval(
         id='interval-component-db',
-        interval=120*1000,  # Increased to 2min to reduce load
+        interval=120*1000,  # 2min for DB updates
         n_intervals=0
-    ),
-    # Temporarily disable session timeout
-    # dcc.Interval(
-    #     id='session-timeout-interval',
-    #     interval=1000*60,  # Check every minute
-    #     n_intervals=0
-    # )
-], fluid=True, id='main-container', style={'backgroundColor': RYB_COLORS['light_bg'], 'minHeight': '100vh'})
+    )
+], fluid=True, id='main-container')
 
 def create_meter_layout(meter_id):
     return dbc.Container([
         navbar,
-        html.H1(f"{meter_names[meter_id]} - Meter ID: {meter_id}", className="text-center my-4", style={'color': RYB_COLORS['dark_text']}),
+        html.H1(f"{meter_names[meter_id]} - Meter ID: {meter_id}", className="text-center my-4"),
         dcc.Store(id='theme-store', storage_type='local'),
-        # dcc.Store(id='session-timestamp', storage_type='session'),
         html.Div(id=f'meter-{meter_id}-status', className="text-center mb-3"),
         dbc.Row([
             dbc.Col(
                 dbc.Card([
-                    dbc.CardHeader(html.H2("All Parameters (from CSV)", className="card-title")),
-                    dbc.CardBody(html.Div(id=f'meter-{meter_id}-data'))
+                    dbc.CardHeader("Voltage Parameters"),
+                    dbc.CardBody([
+                        html.Span("Vry Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-vry', className='voltmeter-display'),
+                        html.Span("Vyb Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-vyb', className='voltmeter-display'),
+                        html.Span("Vbr Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-vbr', className='voltmeter-display'),
+                        html.Span("VLL Average", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-vll', className='voltmeter-display')
+                    ])
                 ], className="shadow-sm"),
-                md=12, className="mb-4"
+                className="col-12 col-md-6 mb-4"
+            ),
+            dbc.Col(
+                dbc.Card([
+                    dbc.CardHeader("Phase Voltage"),
+                    dbc.CardBody([
+                        html.Span("V R Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-vr', className='voltmeter-display'),
+                        html.Span("V Y Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-vy', className='voltmeter-display'),
+                        html.Span("V B Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-vb', className='voltmeter-display'),
+                        html.Span("VLN Average", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-vln', className='voltmeter-display')
+                    ])
+                ], className="shadow-sm"),
+                className="col-12 col-md-6 mb-4"
+            )
+        ]),
+        dbc.Row([
+            dbc.Col(
+                dbc.Card([
+                    dbc.CardHeader("Current Parameters"),
+                    dbc.CardBody([
+                        html.Span("Current R Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-cr', className='voltmeter-display'),
+                        html.Span("Current Y Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-cy', className='voltmeter-display'),
+                        html.Span("Current B Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-cb', className='voltmeter-display'),
+                        html.Span("Current Total", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-ct', className='voltmeter-display')
+                    ])
+                ], className="shadow-sm"),
+                className="col-12 col-md-6 mb-4"
+            ),
+            dbc.Col(
+                dbc.Card([
+                    dbc.CardHeader("Power Parameters"),
+                    dbc.CardBody([
+                        html.Span("Watts R Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-wr', className='voltmeter-display'),
+                        html.Span("Watts Y Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-wy', className='voltmeter-display'),
+                        html.Span("Watts B Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-wb', className='voltmeter-display'),
+                        html.Span("Watts Total", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-wt', className='voltmeter-display')
+                    ])
+                ], className="shadow-sm"),
+                className="col-12 col-md-6 mb-4"
+            )
+        ]),
+        dbc.Row([
+            dbc.Col(
+                dbc.Card([
+                    dbc.CardHeader("Power Factor"),
+                    dbc.CardBody([
+                        html.Span("PF R Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-pfr', className='voltmeter-display'),
+                        html.Span("PF Y Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-pfy', className='voltmeter-display'),
+                        html.Span("PF B Phase", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-pfb', className='voltmeter-display'),
+                        html.Span("PF Average", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-pfa', className='voltmeter-display')
+                    ])
+                ], className="shadow-sm"),
+                className="col-12 col-md-6 mb-4"
+            ),
+            dbc.Col(
+                dbc.Card([
+                    dbc.CardHeader("Energy Parameters"),
+                    dbc.CardBody([
+                        html.Span("Wh Received", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-wh', className='voltmeter-display'),
+                        html.Span("VAh Received", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-vah', className='voltmeter-display'),
+                        html.Span("VARh Ind Received", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-varhi', className='voltmeter-display'),
+                        html.Span("VARh Cap Received", className='voltmeter-label'),
+                        html.Div(id=f'meter-{meter_id}-varhc', className='voltmeter-display')
+                    ])
+                ], className="shadow-sm"),
+                className="col-12 col-md-6 mb-4"
             )
         ]),
         dcc.Interval(
             id=f'interval-meter-{meter_id}',
-            interval=10*1000,  # Increased to 10s to reduce load
+            interval=10*1000,
             n_intervals=0
         )
-    ], fluid=True, id='main-container', style={'backgroundColor': RYB_COLORS['light_bg'], 'minHeight': '100vh'})
+    ], fluid=True, id='main-container', className="meter-container")
 
 app.layout = html.Div([
     dcc.Location(id='url', refresh=False),
+    dcc.Store(id='login-status', data=False, storage_type='session'),
     html.Div(id='page-content')
 ])
 
-# Temporarily disable session timeout callback
-# app.clientside_callback(
-#     """
-#     function(n_intervals, session_timestamp) {
-#         if (!session_timestamp) {
-#             session_timestamp = new Date().getTime();
-#             return [session_timestamp, ''];
-#         }
-#         const current_time = new Date().getTime();
-#         const session_duration = (current_time - session_timestamp) / 1000; // in seconds
-#         const timeout_duration = 1800; // 30 minutes
-#         if (session_duration > timeout_duration) {
-#             window.location.href = '/';
-#             return [session_timestamp, 'Session expired. Please log in again.'];
-#         }
-#         return [session_timestamp, ''];
-#     }
-#     """,
-#     [Output('session-timestamp', 'data'),
-#      Output('session-timeout-message', 'children')],
-#     Input('session-timeout-interval', 'n_intervals'),
-#     State('session-timestamp', 'data')
-# )
+# Callbacks
+@app.callback(
+    Output('login-status', 'data'),
+    Output('url', 'pathname'),
+    Output('login-output', 'children'),
+    Input('login-button', 'n_clicks'),
+    State('login-username', 'value'),
+    State('login-password', 'value'),
+    prevent_initial_call=True
+)
+def login(n_clicks, username, password):
+    if n_clicks and username and password:
+        if username in VALID_USERNAME_PASSWORD_PAIRS and VALID_USERNAME_PASSWORD_PAIRS[username] == password:
+            audit_logger.info(f"Successful login for user: {username}")
+            return True, '/', ''
+        else:
+            audit_logger.warning(f"Failed login attempt for user: {username}")
+            return False, '/login', 'Invalid username or password'
+    return False, '/login', ''
 
-# --- Callbacks ---
-@app.callback(Output('page-content', 'children'),
-              Input('url', 'pathname'))
-def display_page(pathname):
+@app.callback(
+    Output('page-content', 'children'),
+    [Input('url', 'pathname'),
+     Input('login-status', 'data')]
+)
+def display_page(pathname, login_status):
+    if not login_status:
+        return login_layout
+    
     try:
         audit_logger.info(f"Page access: {pathname}")
-        if pathname == '/':
+        if pathname == '/' or pathname == '/login':
             return main_layout
         elif pathname.startswith('/meter/'):
-            meter_id = int(pathname.split('/')[-1])
-            return create_meter_layout(meter_id)
-        else:
-            return html.H1("404 - Page Not Found")
+            meter_id_str = pathname.split('/')[-1]
+            if meter_id_str.isdigit():
+                meter_id = int(meter_id_str)
+                if meter_id in meter_names:
+                    return create_meter_layout(meter_id)
+        return html.H1("404 - Page Not Found")
     except Exception as e:
         audit_logger.error(f"Error in page access: {e}")
         return html.H1("Error loading page")
@@ -364,6 +459,12 @@ def update_status_summary(n):
 def update_main_csv_data(n):
     try:
         df = load_latest_csv_data()
+        # Explicitly ensure df is a DataFrame
+        if not isinstance(df, pd.DataFrame):
+            audit_logger.error(f"df in update_main_csv_data is not a DataFrame. Type: {type(df)}")
+            return html.Div("Error: Data is not in expected format.")
+
+        audit_logger.info(f"Type of df in update_main_csv_data: {type(df)}")
         if df.empty:
             audit_logger.warning("No CSV data available for main page update")
             return html.Div("No CSV data available.")
@@ -381,23 +482,23 @@ def update_main_csv_data(n):
                 dummy_row = {'Meter_ID': mid, 'comm_status': 'FAILED', 'status': 'FAILED'}
                 for param in main_params:
                     dummy_row[param] = "No data available"
-                display_data.append(dummy_row)
+                display_data.append(pd.Series(dummy_row))
 
         connected_meters_df = pd.DataFrame(display_data)
         connected_meters_df = connected_meters_df.sort_values(by='Meter_ID').reset_index(drop=True)
 
-        table_header = [html.Thead(html.Tr([html.Th("Meter Name"), html.Th("Meter ID"), html.Th("Status")] + [html.Th(param) for param in main_params]))]
+        table_header = [html.Thead(html.Tr([html.Th("Meter Name", className="large-font"), html.Th("Meter ID", className="large-font"), html.Th("Status", className="large-font")] + [html.Th(param, className="large-font") for param in main_params]))]
         table_rows = []
 
         for index, row in connected_meters_df.iterrows():
             meter_id = row['Meter_ID']
             status = "Communication Failed" if row['comm_status'] == "FAILED" else row['status']
             status_color = "red" if status == "Communication Failed" else "yellow" if status == "POWER_FAIL" else "green"
-            status_badge = dbc.Badge(status, color=RYB_COLORS[status_color], className="me-1", title=status)
-            row_data = [html.Td(meter_names.get(meter_id, f"Unknown ({meter_id})")), html.Td(meter_id), html.Td(status_badge)]
+            status_badge = dbc.Badge(status, color=RYB_COLORS[status_color], className="me-1 large-font", title=status)
+            row_data = [html.Td(meter_names.get(meter_id, f"Unknown ({meter_id})"), className="large-font"), html.Td(meter_id, className="large-font"), html.Td(status_badge)]
             for param in main_params:
                 value = row[param]
-                row_data.append(html.Td(dbc.Badge(f"{value:.2f}" if isinstance(value, (int, float)) else str(value), color=RYB_COLORS['green'], className="me-1")))
+                row_data.append(html.Td(dbc.Badge(f"{value:.2f}" if isinstance(value, (int, float)) else str(value), color=RYB_COLORS['green'], className="me-1 large-font")))
             table_rows.append(html.Tr(row_data))
 
         table_body = [html.Tbody(table_rows)]
@@ -422,13 +523,13 @@ def update_main_csv_data(n):
 def update_db_charts(n, selected_meters):
     try:
         df_yesterday = get_yesterday_data(config['db_path'])
-        df_today = get_today_data(config['db_daily_path'])
+        df_today = get_today_data(config['db_path'])
         if df_yesterday.empty and df_today.empty:
             audit_logger.warning("No DB data available for charts")
-            return [{}]*8 + [selected_meters]
+            return [px.line(title="No data available")] * 8 + [selected_meters]
 
-        df_yesterday['DateTime'] = np.array(pd.to_datetime(df_yesterday['DateTime']))
-        df_today['DateTime'] = np.array(pd.to_datetime(df_today['DateTime']))
+        df_yesterday['DateTime'] = pd.to_datetime(df_yesterday['DateTime'], errors='coerce')
+        df_today['DateTime'] = pd.to_datetime(df_today['DateTime'], errors='coerce')
         df_yesterday = df_yesterday[df_yesterday['Meter_ID'].isin(selected_meters)]
         df_today = df_today[df_today['Meter_ID'].isin(selected_meters)]
 
@@ -440,86 +541,139 @@ def update_db_charts(n, selected_meters):
             ('PF Average Received', 'PF Average Received', (0, 1))
         ]
 
-        figures = []
+        yesterday_figures = []
+        today_figures = []
+
+        yesterday_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(days=1)
+        yesterday_end = yesterday_start + timedelta(days=1)
+        today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+
         for param, ylabel, yrange in chart_params:
             fig_yesterday = px.line(
                 df_yesterday, x='DateTime', y=param, color='Meter_ID',
                 title=f'Yesterday: {param}',
                 labels={'DateTime': 'Time', param: ylabel, 'Meter_ID': 'Meter'},
                 color_discrete_sequence=color_sequence,
-                hover_data={'Meter_ID': False, param: ':.2f', 'DateTime': '|%Y-%m-%d %H:%M:%S', 'Meter_Name': df_yesterday['Meter_ID'].map(meter_names)}
+                hover_data={'Meter_ID': False, param: ':.2f', 'DateTime': '|%Y-%m-%d %H:%M:%S', 'Meter_Name': df_yesterday['Meter_ID'].map(meter_names) if not df_yesterday.empty else {}}
             )
             fig_yesterday.update_yaxes(range=yrange, gridcolor='lightgray')
-            fig_yesterday.update_xaxes(showgrid=True, gridcolor='lightgray')
+            fig_yesterday.update_xaxes(showgrid=True, gridcolor='lightgray', range=[yesterday_start, yesterday_end])
             fig_yesterday.update_layout(hovermode='x unified')
-            figures.append(fig_yesterday)
+            yesterday_figures.append(fig_yesterday)
 
-            fig_today = px.line(
-                df_today, x='DateTime', y=param, color='Meter_ID',
-                title=f'Today: {param}',
-                labels={'DateTime': 'Time', param: ylabel, 'Meter_ID': 'Meter'},
-                color_discrete_sequence=color_sequence,
-                hover_data={'Meter_ID': False, param: ':.2f', 'DateTime': '|%Y-%m-%d %H:%M:%S', 'Meter_Name': df_today['Meter_ID'].map(meter_names)}
-            )
-            fig_today.update_yaxes(range=yrange, gridcolor='lightgray')
-            fig_today.update_xaxes(showgrid=True, gridcolor='lightgray')
-            fig_today.update_layout(hovermode='x unified')
-            figures.append(fig_today)
+            if df_today.empty:
+                fig_today = px.line(title="No data available for Today")
+            else:
+                fig_today = px.line(
+                    df_today, x='DateTime', y=param, color='Meter_ID',
+                    title=f'Today: {param}',
+                    labels={'DateTime': 'Time', param: ylabel, 'Meter_ID': 'Meter'},
+                    color_discrete_sequence=color_sequence,
+                    hover_data={'Meter_ID': False, param: ':.2f', 'DateTime': '|%Y-%m-%d %H:%M:%S', 'Meter_Name': df_today['Meter_ID'].map(meter_names) if not df_today.empty else {}}
+                )
+                fig_today.update_yaxes(range=yrange, gridcolor='lightgray')
+                fig_today.update_xaxes(showgrid=True, gridcolor='lightgray', range=[today_start, today_end])
+                fig_today.update_layout(hovermode='x unified')
+            today_figures.append(fig_today)
 
-        return figures + [selected_meters]
+        return yesterday_figures + today_figures + [selected_meters]
     except Exception as e:
         audit_logger.error(f"Error in update_db_charts: {e}")
-        return [{}]*8 + [selected_meters]
+        return [px.line(title=f"Error: {e}")] * 8 + [selected_meters]
 
 @app.callback(
-    [Output('collapse-yesterday', 'is_open'),
+    [Output('collapse-yesterday-vll', 'is_open'),
+     Output('collapse-yesterday-current', 'is_open'),
+     Output('collapse-yesterday-watts', 'is_open'),
+     Output('collapse-yesterday-pf', 'is_open'),
      Output('collapse-yesterday-button', 'children')],
     [Input('collapse-yesterday-button', 'n_clicks')],
-    [State('collapse-yesterday', 'is_open')]
+    [State('collapse-yesterday-vll', 'is_open')]
 )
 def toggle_collapse_yesterday(n_clicks, is_open):
     try:
         if n_clicks:
-            return not is_open, "Show Yesterday's Charts" if is_open else "Hide Yesterday's Charts"
-        return is_open, "Hide Yesterday's Charts" if is_open else "Show Yesterday's Charts"
+            return not is_open, not is_open, not is_open, not is_open, "Show Yesterday's Charts" if is_open else "Hide Yesterday's Charts"
+        return is_open, is_open, is_open, is_open, "Hide Yesterday's Charts" if is_open else "Show Yesterday's Charts"
     except Exception as e:
         audit_logger.error(f"Error in toggle_collapse_yesterday: {e}")
-        return is_open, "Hide Yesterday's Charts" if is_open else "Show Yesterday's Charts"
+        return is_open, is_open, is_open, is_open, "Hide Yesterday's Charts" if is_open else "Show Yesterday's Charts"
 
 @app.callback(
-    [Output('collapse-today', 'is_open'),
+    [Output('collapse-today-vll', 'is_open'),
+     Output('collapse-today-current', 'is_open'),
+     Output('collapse-today-watts', 'is_open'),
+     Output('collapse-today-pf', 'is_open'),
      Output('collapse-today-button', 'children')],
     [Input('collapse-today-button', 'n_clicks')],
-    [State('collapse-today', 'is_open')]
+    [State('collapse-today-vll', 'is_open')]
 )
 def toggle_collapse_today(n_clicks, is_open):
     try:
         if n_clicks:
-            return not is_open, "Show Today's Charts" if is_open else "Hide Today's Charts"
-        return is_open, "Hide Today's Charts" if is_open else "Show Today's Charts"
+            return not is_open, not is_open, not is_open, not is_open, "Show Today's Charts" if is_open else "Hide Today's Charts"
+        return is_open, is_open, is_open, is_open, "Hide Today's Charts" if is_open else "Show Today's Charts"
     except Exception as e:
         audit_logger.error(f"Error in toggle_collapse_today: {e}")
-        return is_open, "Hide Today's Charts" if is_open else "Show Today's Charts"
+        return is_open, is_open, is_open, is_open, "Hide Today's Charts" if is_open else "Show Today's Charts"
 
 @app.callback(
-    [Output('main-container', 'style'),
-     Output('theme-store', 'data')],
-    [Input('theme-toggle', 'value')],
+    [Output('theme-store', 'data'),
+     Output('main-container', 'style'),
+     Output('main-navbar', 'dark'),
+     Output('theme-toggle', 'value')],
+    [Input('theme-toggle', 'value'),
+     Input('url', 'pathname')],
     [State('theme-store', 'data')]
 )
-def toggle_theme(dark_theme, stored_theme):
-    try:
-        if dark_theme:
-            return {'backgroundColor': RYB_COLORS['dark_bg'], 'color': RYB_COLORS['light_bg'], 'minHeight': '100vh'}, {'theme': 'dark'}
-        return {'backgroundColor': RYB_COLORS['light_bg'], 'color': RYB_COLORS['dark_text'], 'minHeight': '100vh'}, {'theme': 'light'}
-    except Exception as e:
-        audit_logger.error(f"Error in toggle_theme: {e}")
-        return {'backgroundColor': RYB_COLORS['light_bg'], 'color': RYB_COLORS['dark_text'], 'minHeight': '100vh'}, {'theme': 'light'}
+def manage_theme(toggle_value, pathname, stored_theme):
+    ctx = dash.callback_context
+    trigger_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
+    
+    if trigger_id == 'theme-toggle':
+        new_theme = {'theme': 'dark' if toggle_value else 'light'}
+    else:
+        new_theme = stored_theme or {'theme': 'light'}
+    
+    if new_theme.get('theme') == 'dark':
+        style = {'backgroundColor': RYB_COLORS['dark_bg'], 'color': RYB_COLORS['light_bg'], 'minHeight': '100vh'}
+        navbar_dark = True
+        toggle_value = True
+    else:
+        style = {'backgroundColor': RYB_COLORS['light_bg'], 'color': RYB_COLORS['dark_text'], 'minHeight': '100vh'}
+        navbar_dark = False
+        toggle_value = False
+    
+    return new_theme, style, navbar_dark, toggle_value
 
 for meter_id in [1, 2, 3, 4, 5]:
     @app.callback(
-        [Output(f'meter-{meter_id}-data', 'children'),
-         Output(f'meter-{meter_id}-status', 'children')],
+        [Output(f'meter-{meter_id}-status', 'children'),
+         Output(f'meter-{meter_id}-vry', 'children'),
+         Output(f'meter-{meter_id}-vyb', 'children'),
+         Output(f'meter-{meter_id}-vbr', 'children'),
+         Output(f'meter-{meter_id}-vll', 'children'),
+         Output(f'meter-{meter_id}-vr', 'children'),
+         Output(f'meter-{meter_id}-vy', 'children'),
+         Output(f'meter-{meter_id}-vb', 'children'),
+         Output(f'meter-{meter_id}-vln', 'children'),
+         Output(f'meter-{meter_id}-cr', 'children'),
+         Output(f'meter-{meter_id}-cy', 'children'),
+         Output(f'meter-{meter_id}-cb', 'children'),
+         Output(f'meter-{meter_id}-ct', 'children'),
+         Output(f'meter-{meter_id}-wr', 'children'),
+         Output(f'meter-{meter_id}-wy', 'children'),
+         Output(f'meter-{meter_id}-wb', 'children'),
+         Output(f'meter-{meter_id}-wt', 'children'),
+         Output(f'meter-{meter_id}-pfr', 'children'),
+         Output(f'meter-{meter_id}-pfy', 'children'),
+         Output(f'meter-{meter_id}-pfb', 'children'),
+         Output(f'meter-{meter_id}-pfa', 'children'),
+         Output(f'meter-{meter_id}-wh', 'children'),
+         Output(f'meter-{meter_id}-vah', 'children'),
+         Output(f'meter-{meter_id}-varhi', 'children'),
+         Output(f'meter-{meter_id}-varhc', 'children')],
         Input(f'interval-meter-{meter_id}', 'n_intervals')
     )
     def update_meter_data(n, current_meter_id=meter_id):
@@ -527,37 +681,61 @@ for meter_id in [1, 2, 3, 4, 5]:
             df = load_latest_csv_data()
             if df.empty:
                 audit_logger.warning(f"No CSV data available for meter {current_meter_id} page update")
-                return html.Div("No CSV data available."), html.Div()
+                return (html.Div(),) + ("0.00",) * 24
 
             meter_df = df[df['Meter_ID'] == current_meter_id].tail(1).reset_index()
             if meter_df.empty:
                 audit_logger.warning(f"No data available for Meter ID {current_meter_id} after filtering")
-                return html.Div(f"No data available for Meter ID {current_meter_id}."), html.Div()
+                return (html.Div(),) + ("0.00",) * 24
 
             status = "Communication Failed" if meter_df.iloc[0]['comm_status'] == "FAILED" else meter_df.iloc[0]['status']
-            status_color = "red" if status == "Communication Failed" else "yellow" if status == "POWER_FAIL" else "green"
+            if status in ['EB supply On', 'DG set On', 'OK']:
+                status_color = 'green'
+            elif status in ['EB supply Off', 'DG set Off', 'POWER_FAIL']:
+                status_color = 'yellow'
+            else:
+                status_color = 'red'
             status_alert = html.Div(
                 dbc.Alert(status, color=RYB_COLORS[status_color], className="fade show"),
                 className="text-center"
             ) if status != "OK" else html.Div()
 
-            table_header = [html.Thead(html.Tr([html.Th("Parameter"), html.Th("Value")]))]
-            table_rows = []
-            exclude_cols = ['index', 'Date', 'Time', 'DateTime', 'Meter_ID', 'comm_status', 'status']
-            for col in meter_df.columns:
-                if col not in exclude_cols:
-                    value = meter_df.iloc[0][col]
-                    color = PHASE_COLORS.get(col, "green")
-                    table_rows.append(html.Tr([
-                        html.Td(col),
-                        html.Td(dbc.Badge(f"{value:.2f}" if isinstance(value, (int, float)) else str(value), color=RYB_COLORS[color], className="me-1 p-2", title=col))
-                    ]))
+            # Parameter values with fallback for missing columns
+            vry = meter_df['Vry Phase'].iloc[0] if 'Vry Phase' in meter_df.columns else 0.00
+            vyb = meter_df['Vyb Phase'].iloc[0] if 'Vyb Phase' in meter_df.columns else 0.00
+            vbr = meter_df['Vbr Phase'].iloc[0] if 'Vbr Phase' in meter_df.columns else 0.00
+            vll = meter_df['VLL Average'].iloc[0] if 'VLL Average' in meter_df.columns else 0.00
+            vr = meter_df['V R phase'].iloc[0] if 'V R phase' in meter_df.columns else 0.00
+            vy = meter_df['V Y phase'].iloc[0] if 'V Y phase' in meter_df.columns else 0.00
+            vb = meter_df['V B phase'].iloc[0] if 'V B phase' in meter_df.columns else 0.00
+            vln = meter_df['VLN Average'].iloc[0] if 'VLN Average' in meter_df.columns else 0.00
+            cr = meter_df['Current R phase'].iloc[0] if 'Current R phase' in meter_df.columns else 0.00
+            cy = meter_df['Current Y phase'].iloc[0] if 'Current Y phase' in meter_df.columns else 0.00
+            cb = meter_df['Current B phase'].iloc[0] if 'Current B phase' in meter_df.columns else 0.00
+            ct = meter_df['Current Total'].iloc[0] if 'Current Total' in meter_df.columns else 0.00
+            wr = meter_df['Watts R phase'].iloc[0] if 'Watts R phase' in meter_df.columns else 0.00
+            wy = meter_df['Watts Y phase'].iloc[0] if 'Watts Y phase' in meter_df.columns else 0.00
+            wb = meter_df['Watts B phase'].iloc[0] if 'Watts B phase' in meter_df.columns else 0.00
+            wt = meter_df['Watts Total'].iloc[0] if 'Watts Total' in meter_df.columns else 0.00
+            pfr = meter_df['PF R phase'].iloc[0] if 'PF R phase' in meter_df.columns else 0.00
+            pfy = meter_df['PF Y phase'].iloc[0] if 'PF Y phase' in meter_df.columns else 0.00
+            pfb = meter_df['PF B phase'].iloc[0] if 'PF B phase' in meter_df.columns else 0.00
+            pfa = meter_df['PF Average Received'].iloc[0] if 'PF Average Received' in meter_df.columns else 0.00
+            wh = meter_df['Wh Received'].iloc[0] if 'Wh Received' in meter_df.columns else (meter_df['Wh Received (Import)'].iloc[0] if 'Wh Received (Import)' in meter_df.columns else 0.00)
+            vah = meter_df['VAh Received'].iloc[0] if 'VAh Received' in meter_df.columns else (meter_df['VAh Received (Import)'].iloc[0] if 'VAh Received (Import)' in meter_df.columns else 0.00)
+            varhi = meter_df['VARh Ind Received'].iloc[0] if 'VARh Ind Received' in meter_df.columns else (meter_df['VARh Ind Received (Import)'].iloc[0] if 'VARh Ind Received (Import)' in meter_df.columns else 0.00)
+            varhc = meter_df['VARh Cap Received'].iloc[0] if 'VARh Cap Received' in meter_df.columns else (meter_df['VARh Cap Received (Import)'].iloc[0] if 'VARh Cap Received (Import)' in meter_df.columns else 0.00)
 
-            table_body = [html.Tbody(table_rows)]
-            return dbc.Table(table_header + table_body, bordered=True, hover=True, responsive=True, striped=True, className="table-sm"), status_alert
+            return (status_alert,
+                    f"{vry:.2f}", f"{vyb:.2f}", f"{vbr:.2f}", f"{vll:.2f}",
+                    f"{vr:.2f}", f"{vy:.2f}", f"{vb:.2f}", f"{vln:.2f}",
+                    f"{cr:.2f}", f"{cy:.2f}", f"{cb:.2f}", f"{ct:.2f}",
+                    f"{wr:.2f}", f"{wy:.2f}", f"{wb:.2f}", f"{wt:.2f}",
+                    f"{pfr:.2f}", f"{pfy:.2f}", f"{pfb:.2f}", f"{pfa:.2f}",
+                    f"{wh:.2f}", f"{vah:.2f}", f"{varhi:.2f}", f"{varhc:.2f}")
         except Exception as e:
             audit_logger.error(f"Error in update_meter_data for meter {current_meter_id}: {e}")
-            return html.Div(f"Error loading data for meter {current_meter_id}: {e}"), html.Div()
+            return (html.Div(f"Error loading data for meter {current_meter_id}: {e}"),) + ("0.00",) * 24
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8050, dev_tools_prune_errors=True)
