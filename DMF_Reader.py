@@ -6,21 +6,28 @@ import logging
 import pandas as pd
 import os
 import json
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from datalogger import init_db, log_to_db, init_daily_db, log_to_daily_db, copy_daily_to_yearly
-
-# Load encryption key from file
-KEY_FILE = '/home/sseevri/SmartSubstationMonitoringSystem/config_key.key'
-if not os.path.exists(KEY_FILE):
-    raise FileNotFoundError(f"Encryption key file {KEY_FILE} not found. Run encrypt_config.py first.")
-with open(KEY_FILE, 'rb') as f:
-    key = f.read()
+from shared_config import REGISTER_MAP, VALIDATION_RANGES
 
 # Load and decrypt configuration
-with open('/home/sseevri/SmartSubstationMonitoringSystem/config.json', 'r') as f:
-    encrypted_config = json.load(f)
-cipher = Fernet(key)
-decrypted_config = json.loads(cipher.decrypt(encrypted_config['encrypted_data'].encode()).decode())
+try:
+    # Load encryption key from file
+    KEY_FILE = '/home/sseevri/SmartSubstationMonitoringSystem/config_key.key'
+    if not os.path.exists(KEY_FILE):
+        raise FileNotFoundError(f"Encryption key file {KEY_FILE} not found. Run encrypt_config.py first.")
+    with open(KEY_FILE, 'rb') as f:
+        key = f.read()
+
+    # Load and decrypt configuration
+    with open('/home/sseevri/SmartSubstationMonitoringSystem/config.json', 'r') as f:
+        encrypted_config = json.load(f)
+    cipher = Fernet(key)
+    decrypted_config = json.loads(cipher.decrypt(encrypted_config['encrypted_data'].encode()).decode())
+except (FileNotFoundError, json.JSONDecodeError, InvalidToken) as e:
+    logging.critical(f"Failed to load or decrypt configuration: {e}")
+    raise SystemExit(f"Failed to load or decrypt configuration: {e}") from e
+
 SERIAL_PORT = decrypted_config['serial_port']
 BAUD_RATE = decrypted_config['baud_rate']
 TIMEOUT = decrypted_config['serial_timeout']
@@ -44,88 +51,6 @@ logging.basicConfig(
 
 MODBUS_READ_HOLDING_REGISTERS = 0x03
 
-REGISTER_MAP = [
-    ("Watts Total", "Float", 40101),
-    ("Watts R phase", "Float", 40103),
-    ("Watts Y phase", "Float", 40105),
-    ("Watts B phase", "Float", 40107),
-    ("VAR Total", "Float", 40109),
-    ("VAR R phase", "Float", 40111),
-    ("VAR Y phase", "Float", 40113),
-    ("VAR B phase", "Float", 40115),
-    ("PF Avg (instant)", "Float", 40117),
-    ("PF R phase", "Float", 40119),
-    ("PF Y phase", "Float", 40121),
-    ("PF B phase", "Float", 40123),
-    ("VA Total", "Float", 40125),
-    ("VA R phase", "Float", 40127),
-    ("VA Y phase", "Float", 40129),
-    ("VA B phase", "Float", 40131),
-    ("VLL Average", "Float", 40133),
-    ("Vry Phase", "Float", 40135),
-    ("Vyb Phase", "Float", 40137),
-    ("Vbr Phase", "Float", 40139),
-    ("VLN Average", "Float", 40141),
-    ("V R phase", "Float", 40143),
-    ("V Y phase", "Float", 40145),
-    ("V B phase", "Float", 40147),
-    ("Current Total", "Float", 40149),
-    ("Current R phase", "Float", 40151),
-    ("Current Y phase", "Float", 40153),
-    ("Current B phase", "Float", 40155),
-    ("Frequency", "Float", 40157),
-    ("Wh Received (Import)", "Float", 40159),
-    ("VAh Received (Import)", "Float", 40161),
-    ("VARh Ind Received (Import)", "Float", 40163),
-    ("VARh Cap Received (Import)", "Float", 40165),
-    ("Wh Delivered", "Float", 40167),
-    ("VAh Delivered", "Float", 40169),
-    ("VARh Ind Delivered", "Float", 40171),
-    ("VARh Cap Delivered", "Float", 40173),
-    ("PF Average Received", "Float", 40175),
-]
-
-# Validation ranges (non-negative)
-VALIDATION_RANGES = {
-    "VLL Average": (0, 500),  # Volts
-    "Current Total": (0, 1000),  # Amps
-    "Watts Total": (0, 1000000),  # Watts
-    "PF Average Received": (0, 1),  # Power factor
-    "Watts R phase": (0, 1000000),
-    "Watts Y phase": (0, 1000000),
-    "Watts B phase": (0, 1000000),
-    "VAR Total": (0, 1000000),
-    "VAR R phase": (0, 1000000),
-    "VAR Y phase": (0, 1000000),
-    "VAR B phase": (0, 1000000),
-    "PF Avg (instant)": (0, 1),
-    "PF R phase": (0, 1),
-    "PF Y phase": (0, 1),
-    "PF B phase": (0, 1),
-    "VA Total": (0, 1000000),
-    "VA R phase": (0, 1000000),
-    "VA Y phase": (0, 1000000),
-    "VA B phase": (0, 1000000),
-    "Vry Phase": (0, 500),
-    "Vyb Phase": (0, 500),
-    "Vbr Phase": (0, 500),
-    "VLN Average": (0, 300),
-    "V R phase": (0, 300),
-    "V Y phase": (0, 300),
-    "V B phase": (0, 300),
-    "Current R phase": (0, 1000),
-    "Current Y phase": (0, 1000),
-    "Current B phase": (0, 1000),
-    "Frequency": (0, 60),
-    "Wh Received (Import)": (0, float('inf')),
-    "VAh Received (Import)": (0, float('inf')),
-    "VARh Ind Received (Import)": (0, float('inf')),
-    "VARh Cap Received (Import)": (0, float('inf')),
-    "Wh Delivered": (0, float('inf')),
-    "VAh Delivered": (0, float('inf')),
-    "VARh Ind Delivered": (0, float('inf')),
-    "VARh Cap Delivered": (0, float('inf'))
-}
 
 def calculate_crc(data):
     crc = 0xFFFF
@@ -151,13 +76,38 @@ def parse_float(data, byte_order='big'):
     if len(data) != 4:
         raise ValueError(f"Expected 4 bytes for float, got {len(data)}")
     try:
-        swapped_data = data[2:4] + data[0:2]
-        value = struct.unpack('>f', swapped_data)[0]
+        if byte_order == 'big':
+            # This handles a specific word-swapped big-endian format (CDAB)
+            swapped_data = data[2:4] + data[0:2]
+            value = struct.unpack('>f', swapped_data)[0]
+        elif byte_order == 'little':
+            value = struct.unpack('<f', data)[0]
+        elif byte_order == 'big_endian':
+            value = struct.unpack('>f', data)[0]
+        else:
+            raise ValueError(f"Unsupported byte order for float: {byte_order}")
+
         if abs(value) > 1e10:
             raise ValueError("Unreasonable value")
         return value
     except (ValueError, struct.error) as e:
-        logging.debug(f"Parse failed: {e}")
+        logging.debug(f"Parse float failed: {e}")
+        raise
+
+def parse_integer(data, dtype, byte_order='big'):
+    try:
+        if dtype == 'int16':
+            return struct.unpack('>h' if byte_order == 'big' else '<h', data)[0]
+        elif dtype == 'uint16':
+            return struct.unpack('>H' if byte_order == 'big' else '<H', data)[0]
+        elif dtype == 'int32':
+            return struct.unpack('>i' if byte_order == 'big' else '<i', data)[0]
+        elif dtype == 'uint32':
+            return struct.unpack('>I' if byte_order == 'big' else '<I', data)[0]
+        else:
+            raise ValueError(f"Unsupported integer dtype: {dtype}")
+    except struct.error as e:
+        logging.debug(f"Parse integer failed: {e}")
         raise
 
 def validate_data(data):
@@ -186,37 +136,74 @@ def read_meter(ser, slave_id, registers, max_retries=2):
     i = 0
     while i < len(sorted_registers):
         start_name, start_dtype, start_addr = sorted_registers[i]
-        quantity = 2
+        
+        # Determine quantity of registers to read based on data type
+        quantity = 0
+        if "Float" in start_dtype or "32" in start_dtype:
+            quantity = 2
+        else:
+            quantity = 1
+
         j = i + 1
         while j < len(sorted_registers) and sorted_registers[j][2] == start_addr + quantity and quantity < 125:
-            quantity += 2
+            next_dtype = sorted_registers[j][1]
+            if "Float" in next_dtype or "32" in next_dtype:
+                quantity += 2
+            else:
+                quantity += 1
             j += 1
+
         for attempt in range(max_retries):
             try:
+                if not ser.is_open:
+                    ser.open()
                 ser.reset_input_buffer()
                 ser.reset_output_buffer()
                 request = build_read_holding_registers(slave_id, start_addr, quantity)
                 ser.write(request)
                 logging.debug(f"Meter {slave_id} attempt {attempt + 1} sent request for addr {start_addr}, qty {quantity}: {request.hex()}")
                 time.sleep(0.2)
-                expected_length = 3 + 1 + quantity * 2 + 2
+                
+                expected_length = 5 + quantity * 2 # Slave ID (1) + Func Code (1) + Byte Count (1) + Data (qty*2) + CRC (2)
                 response = ser.read(expected_length)
                 logging.debug(f"Meter {slave_id} raw response for addr {start_addr}: {response.hex()}")
+
                 if not response:
                     raise Exception("No response from meter")
+
+                # CRC Validation
+                received_crc = response[-2:]
+                calculated_crc = calculate_crc(response[:-2])
+                if received_crc != calculated_crc:
+                    raise Exception(f"CRC mismatch. Received: {received_crc.hex()}, Calculated: {calculated_crc.hex()}")
+
                 if response[0] != slave_id or response[1] != MODBUS_READ_HOLDING_REGISTERS:
                     raise Exception(f"Invalid response header: {response.hex()}")
+                
                 byte_count = response[2]
                 if byte_count != quantity * 2:
                     raise Exception(f"Unexpected data length: {byte_count}")
+                
                 response_data = response[3:-2]
+                
                 for k in range(i, j):
                     name, dtype, addr = sorted_registers[k]
                     offset = (addr - start_addr) * 2
+                    
                     if dtype == "Float":
                         value = parse_float(response_data[offset:offset+4], byte_order='big')
                         data[name] = value
-                break
+                    elif dtype in ['int16', 'uint16']:
+                        value = parse_integer(response_data[offset:offset+2], dtype)
+                        data[name] = value
+                    elif dtype in ['int32', 'uint32']:
+                        value = parse_integer(response_data[offset:offset+4], dtype)
+                        data[name] = value
+
+                break  # Success
+            except serial.SerialException as e:
+                logging.error(f"Serial error in read_meter for meter {slave_id}: {e}")
+                raise
             except Exception as e:
                 logging.error(f"Meter {slave_id} attempt {attempt + 1} failed for addr {start_addr}: {e}")
                 if attempt + 1 == max_retries:
@@ -229,34 +216,41 @@ def read_meter(ser, slave_id, registers, max_retries=2):
     return validated_data, comm_status
 
 def write_to_csv(date, time_str, meter_id, data, comm_status):
-    """Write meter data to CSV with 1-hour retention."""
+    """
+    Write meter data to CSV.
+    For performance, this function now appends to the CSV file.
+    The 1-hour data retention policy should be handled by a separate, periodic cleanup process.
+    """
     filename = CSV_FILE
     datetime_str = f"{date} {time_str}"
+    status = 'OK'
+    power_current_params = ['Watts Total', 'Current Total', 'VA Total', 'VAR Total']
+    if comm_status == "OK" and all(data.get(param, 0.0) == 0.0 for param in power_current_params):
+        if meter_id == 1:
+            status = 'EB supply Off'
+        elif meter_id == 5:
+            status = 'DG set Off'
+        else:
+            status = 'POWER_FAIL'
+    elif comm_status == "OK":
+        if meter_id == 1:
+            status = 'EB supply On'
+        elif meter_id == 5:
+            status = 'DG set On'
+
     row = {
         'Date': date,
         'Time': time_str,
         'DateTime': datetime_str,
         'Meter_ID': meter_id,
         'comm_status': comm_status,
-        'status': 'OK'
+        'status': status
     }
-    power_current_params = ['Watts Total', 'Current Total', 'VA Total', 'VAR Total']
-    if comm_status == "OK" and all(data.get(param, 0.0) == 0.0 for param in power_current_params):
-        row['status'] = 'POWER_FAIL'
     row.update({name: "{:.2f}".format(value) if value is not None else "None" for name, value in data.items()})
     
-    # Read existing CSV and enforce 1-hour retention
-    if os.path.isfile(filename):
-        df = pd.read_csv(filename)
-        df['DateTime'] = pd.to_datetime(df['Date'] + ' ' + df['Time'])
-        cutoff_time = datetime.now() - timedelta(hours=1)
-        df = df[df['DateTime'] >= cutoff_time]
-    else:
-        df = pd.DataFrame()
-    
-    # Append new row
-    df = pd.concat([df, pd.DataFrame([row])], ignore_index=True)
-    df.to_csv(filename, index=False)
+    header = not os.path.exists(filename)
+    df = pd.DataFrame([row])
+    df.to_csv(filename, mode='a', header=header, index=False, encoding='utf-8')
 
 def open_serial_port(max_retries=3):
     """Attempt to open serial port with retries."""
@@ -316,29 +310,41 @@ def main():
                     logging.info(f"Meter {meter_id} data: {data}, comm_status: {comm_status}")
                 except serial.SerialException as e:
                     logging.error(f"Serial error for meter {meter_id}: {e}")
-                    ser.close()
-                    ser = open_serial_port()
+                    if ser and ser.is_open:
+                        ser.close()
+                    try:
+                        ser = open_serial_port()
+                    except serial.SerialException:
+                        logging.critical("Could not reopen serial port. Will retry in next cycle.")
+                        time.sleep(POLLING_INTERVAL)
+            
             current_time = time.time()
-            # Check for midnight to copy daily data and reset
-            if now.day != last_day and now.hour == 0 and now.minute < 1:
+
+            # Check for day change to copy daily data and reset
+            if now.day != last_day:
                 copy_daily_to_yearly(DB_DAILY_PATH, DB_PATH)
-                init_daily_db(DB_DAILY_PATH)  # Reset daily database
+                init_daily_db(DB_DAILY_PATH)
                 last_day = now.day
                 logging.info("Daily database copied to yearly and reset")
+
             if current_time - last_log_time >= SQLITE_LOG_INTERVAL:
                 for meter_id in METER_IDS:
-                    log_to_db(DB_PATH, date, time_str, meter_id, meter_data[meter_id])
-                    log_to_daily_db(DB_DAILY_PATH, date, time_str, meter_id, meter_data[meter_id])
+                    try:
+                        log_to_db(DB_PATH, date, time_str, meter_id, meter_data.get(meter_id, {}))
+                        log_to_daily_db(DB_DAILY_PATH, date, time_str, meter_id, meter_data.get(meter_id, {}))
+                    except Exception as e:
+                        logging.error(f"Failed to log data to database for meter {meter_id}: {e}")
                 last_log_time = current_time
                 logging.info(f"Logged data to SQLite (1-year and daily) for all meters at {date} {time_str}")
+            
             print(f"\nWaiting {POLLING_INTERVAL} seconds for next poll...")
             time.sleep(POLLING_INTERVAL)
     except KeyboardInterrupt:
         print("\nProgram terminated by user")
     except Exception as e:
-        logging.error(f"Program error: {e}")
+        logging.critical(f"Unhandled program error: {e}", exc_info=True)
     finally:
-        if ser:
+        if ser and ser.is_open:
             ser.close()
             logging.info("Serial port closed")
 
