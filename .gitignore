@@ -157,3 +157,5 @@ meter_data.csv
 
 # Keys
 config_key.key
+assets/*.png
+assets/*.jpg
