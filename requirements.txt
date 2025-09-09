@@ -5,3 +5,11 @@ pandas==2.2.2
 plotly==5.22.0
 pyserial==3.5
 cryptography==42.0.8
+flask
+schedule
+requests
+numpy
+werkzeug
+Flask-Login
+scrypt==0.8.18
+python-telegram-bot

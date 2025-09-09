@@ -1,4 +1,6 @@
 import dash
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from dash import dcc, html, Dash
 from dash.dependencies import Input, Output, State
 import pandas as pd
@@ -11,6 +13,8 @@ import logging
 import os
 import numpy as np
 import warnings
+from werkzeug.security import check_password_hash
+import sqlite3
 from datalogger import get_yesterday_data, get_today_data, export_to_csv
 
 # Suppress Plotly FutureWarning
@@ -37,7 +41,7 @@ audit_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(me
 audit_logger.addHandler(audit_handler)
 
 # Initialize Dash app
-app = Dash(__name__, suppress_callback_exceptions=True, external_stylesheets=[dbc.themes.BOOTSTRAP, '/assets/voltmeter.css'])
+app = Dash(__name__, suppress_callback_exceptions=True, external_stylesheets=[dbc.themes.BOOTSTRAP, '/assets/voltmeter.css', 'https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css'])
 app.server.config['SECRET_KEY'] = os.urandom(24).hex()
 
 # Basic authentication credentials
@@ -62,7 +66,10 @@ RYB_COLORS = {
     "dark_text": "#343a40",
     "light_bg": "#f8f9fa",
     "card_bg": "#ffffff",
-    "dark_bg": "#343a40"
+    "dark_bg": "#343a40",
+    "danger": "#E34234",
+    "success": "#32CD32",
+    "secondary": "#6c757d"
 }
 
 # Phase colors
@@ -117,12 +124,226 @@ def load_latest_csv_data():
         audit_logger.error(f"CSV load error: {e}")
         return pd.DataFrame()
 
+# Add this new function to app.py after the load_latest_csv_data function
+def get_energy_consumption(db_path, date_str):
+    '''Calculate energy consumption for a specific date for all meters.'''
+    try:
+        with sqlite3.connect(db_path) as conn:
+            query = '''
+            SELECT Meter_ID, MIN("Wh Received") as min_wh, MAX("Wh Received") as max_wh
+            FROM meter_readings
+            WHERE DATE(DateTime) = ?
+            GROUP BY Meter_ID
+            '''
+            df = pd.read_sql_query(query, conn, params=(date_str,))
+        
+        # Calculate consumption in kWh
+        consumption = {}
+        for _, row in df.iterrows():
+            meter_id = row['Meter_ID']
+            min_wh = row['min_wh'] if pd.notna(row['min_wh']) else 0
+            max_wh = row['max_wh'] if pd.notna(row['max_wh']) else 0
+            consumption[meter_id] = max((max_wh - min_wh) / 1000, 0)  # Convert to kWh, ensure non-negative
+        
+        return consumption
+    except Exception as e:
+        audit_logger.error(f"Error calculating energy consumption for {date_str}: {e}")
+        return {}
+
+# Add this new function to create the energy consumption table
+def create_energy_consumption_table(consumption_data, title):
+    '''Create a table showing energy consumption for all meters.'''
+    table_header = [html.Thead(html.Tr([
+        html.Th("Meter Name", className="large-font"),
+        html.Th(title, className="large-font")
+    ]))]
+    
+    table_rows = []
+    for meter_id in [1, 2, 3, 4, 5]:
+        meter_name = meter_names.get(meter_id, f"Unknown ({meter_id})")
+        consumption = consumption_data.get(meter_id, 0.0)
+        table_rows.append(html.Tr([
+            html.Td(meter_name, className="large-font"),
+            html.Td(f"{consumption:.2f} kWh", className="large-font")
+        ]))
+    
+    table_body = [html.Tbody(table_rows)]
+    return dbc.Table(table_header + table_body, bordered=True, hover=True, responsive=True, striped=True, className="table-sm")
+
+def create_energy_card(meter_id, meter_name, yesterday_energy, today_energy):
+    """Create a beautiful card for energy consumption with progress bar and comparison."""
+    # Calculate percentage change
+    if yesterday_energy > 0:
+        change_percent = ((today_energy - yesterday_energy) / yesterday_energy) * 100
+    else:
+        change_percent = 0 if today_energy == 0 else 100  # If yesterday was 0 and today has value
+    
+    # Determine change direction and color
+    if change_percent > 0:
+        change_direction = "up"
+        change_color = "danger"
+        change_icon = "arrow-up"
+    elif change_percent < 0:
+        change_direction = "down"
+        change_color = "success"
+        change_icon = "arrow-down"
+    else:
+        change_direction = "equal"
+        change_color = "secondary"
+        change_icon = "arrow-right"
+    
+    # Determine progress bar color based on consumption level
+    if today_energy < 100:
+        progress_color = "success"
+    elif today_energy < 300:
+        progress_color = "warning"
+    else:
+        progress_color = "danger"
+    
+    # Create a progress bar (assuming max consumption of 500 kWh for visualization)
+    progress_value = min(today_energy / 500 * 100, 100)
+    
+    # Create the card
+    card = dbc.Card([
+        dbc.CardBody([
+            html.Div([
+                # Meter name and icon
+                html.Div([
+                    html.I(className="fas fa-bolt me-2", style={"color": RYB_COLORS['blue']}),
+                    html.H5(meter_name, className="mb-0")
+                ], className="d-flex align-items-center"),
+                
+                # Energy values
+                html.Div([
+                    html.Div([
+                        html.Span("Yesterday:", className="text-muted small"),
+                        html.H4(f"{yesterday_energy:.2f} kWh", className="mb-0")
+                    ], className="text-center"),
+                    html.Div([
+                        html.Span("Today:", className="text-muted small"),
+                        html.H4(f"{today_energy:.2f} kWh", className="mb-0")
+                    ], className="text-center")
+                ], className="d-flex justify-content-between mt-2"),
+                
+                # Change indicator
+                html.Div([
+                    html.I(className=f"fas fa-{change_icon} me-1", style={"color": RYB_COLORS[change_color]}),
+                    html.Span(f"{abs(change_percent):.1f}%", style={"color": RYB_COLORS[change_color]})
+                ], className="text-center mt-2"),
+                
+                # Progress bar
+                dbc.Progress(
+                    value=progress_value,
+                    color=progress_color,
+                    className="mt-2",
+                    style={"height": "10px"}
+                )
+            ])
+        ])
+    ], className="h-100 shadow-sm")
+    
+    return card
+
+# Update the energy consumption section in the main layout
+def create_energy_consumption_layout(yesterday_consumption, today_consumption):
+    """Create the energy consumption layout with beautiful cards."""
+    # Create cards for each meter
+    cards = []
+    for meter_id in [1, 2, 3, 4, 5]:
+        meter_name = meter_names.get(meter_id, f"Unknown ({meter_id})")
+        yesterday_energy = yesterday_consumption.get(meter_id, 0.0)
+        today_energy = today_consumption.get(meter_id, 0.0)
+        
+        card = create_energy_card(meter_id, meter_name, yesterday_energy, today_energy)
+        cards.append(dbc.Col(card, className="mb-4", width=12, md=6, lg=4, xl=2))
+    
+    # Create a summary row with total consumption
+    total_yesterday = sum(yesterday_consumption.values())
+    total_today = sum(today_consumption.values())
+    
+    # Calculate total change
+    if total_yesterday > 0:
+        total_change_percent = ((total_today - total_yesterday) / total_yesterday) * 100
+    else:
+        total_change_percent = 0 if total_today == 0 else 100
+    
+    # Determine total change direction and color
+    if total_change_percent > 0:
+        total_change_direction = "up"
+        total_change_color = "danger"
+        total_change_icon = "arrow-up"
+    elif total_change_percent < 0:
+        total_change_direction = "down"
+        total_change_color = "success"
+        total_change_icon = "arrow-down"
+    else:
+        total_change_direction = "equal"
+        total_change_color = "secondary"
+        total_change_icon = "arrow-right"
+    
+    # Create a summary card
+    summary_card = dbc.Card([
+        dbc.CardBody([
+            html.H4("Total Energy Consumption", className="text-center mb-3"),
+            html.Div([
+                html.Div([
+                    html.Span("Yesterday:", className="text-muted small"),
+                    html.H3(f"{total_yesterday:.2f} kWh", className="mb-0 text-center")
+                ], className="mb-2"),
+                html.Div([
+                    html.Span("Today:", className="text-muted small"),
+                    html.H3(f"{total_today:.2f} kWh", className="mb-0 text-center")
+                ], className="mb-2"),
+                html.Div([
+                    html.I(className=f"fas fa-{total_change_icon} me-1", style={"color": RYB_COLORS[total_change_color]}),
+                    html.Span(f"{abs(total_change_percent):.1f}%", style={"color": RYB_COLORS[total_change_color]})
+                ], className="text-center")
+            ])
+        ])
+    ], className="shadow-sm")
+    
+    # Create a pie chart for energy distribution
+    pie_data = []
+    for meter_id in [1, 2, 3, 4, 5]:
+        meter_name = meter_names.get(meter_id, f"Unknown ({meter_id})")
+        energy = today_consumption.get(meter_id, 0.0)
+        if energy > 0:
+            pie_data.append({"Meter": meter_name, "Energy": energy})
+    
+    if pie_data:
+        pie_df = pd.DataFrame(pie_data)
+        pie_fig = px.pie(
+            pie_df, 
+            values="Energy", 
+            names="Meter", 
+            title="Today's Energy Distribution",
+            color_discrete_sequence=[RYB_COLORS["red"], RYB_COLORS["yellow"], RYB_COLORS["blue"], RYB_COLORS["green"], RYB_COLORS["purple"]]
+        )
+        pie_fig.update_traces(textposition='inside', textinfo='percent+label')
+        pie_fig.update_layout(
+            margin=dict(l=0, r=0, t=40, b=0),
+            height=250
+        )
+        pie_chart = dcc.Graph(figure=pie_fig, style={"height": "250px"})
+    else:
+        pie_chart = html.Div("No data available", className="text-center p-4")
+    
+    # Return the complete layout
+    return html.Div([
+        dbc.Row([
+            dbc.Col(summary_card, className="mb-4", width=12, lg=4),
+            dbc.Col(pie_chart, className="mb-4", width=12, lg=8)
+        ]),
+        dbc.Row(cards)
+    ])
+
+
 # Layouts
 login_layout = html.Div([
     html.Div([
-        html.Img(src='/assets/Vridhachalam.png', style={'position': 'fixed', 'top': 0, 'left': 0, 'width': '100%', 'height': '100%', 'z-index': -1, 'opacity': 0.2}),
+        html.Img(src='/assets/Vridhachalam.png', style={'position': 'fixed', 'top': 0, 'left': 0, 'width': '100%', 'height': '100%', 'z-index': -1, 'opacity': 0.4}),
         html.Div([
-            html.H2("Smart Substation Monitoring", className="text-center text-white"),
+            html.H2("SSE/E/VRI Smart Substation Monitoring", className="text-center text-white"),
             dbc.Card([
                 dbc.CardBody([
                     dbc.Input(id="login-username", placeholder="Username", type="text", className="mb-3"),
@@ -150,7 +371,7 @@ navbar = dbc.NavbarSimple(
         ),
         dbc.NavItem(dbc.Switch(id="theme-toggle", label="Dark Theme", value=False)),
     ],
-    brand=html.Span("Smart Substation Monitoring", style={'color': 'white', 'fontWeight': 'bold'}),
+    brand=html.Span("SSE/E/VRI Smart Substation Monitoring", style={'color': 'white', 'fontWeight': 'bold'}),
     brand_href="/",
     color="primary",
     dark=True,
@@ -192,8 +413,18 @@ main_layout = dbc.Container([
     dbc.Row([
         dbc.Col(
             dbc.Card([
-                dbc.CardHeader(html.H2("Current Readings (from CSV)", className="card-title")),
+                dbc.CardHeader(html.H2("Substation Meter Readings", className="card-title")),
                 dbc.CardBody(html.Div(id='live-update-csv-data'))
+            ], className="shadow-sm"),
+            md=12, className="mb-4"
+        )
+    ]),
+    # NEW SECTION: Energy Consumption with beautiful layout
+    dbc.Row([
+        dbc.Col(
+            dbc.Card([
+                dbc.CardHeader(html.H2("Energy Consumption", className="card-title")),
+                dbc.CardBody(html.Div(id='energy-consumption-layout'))
             ], className="shadow-sm"),
             md=12, className="mb-4"
         )
@@ -250,7 +481,7 @@ def create_meter_layout(meter_id):
         dbc.Row([
             dbc.Col(
                 dbc.Card([
-                    dbc.CardHeader("Voltage Parameters"),
+                    dbc.CardHeader("Line Voltage"),
                     dbc.CardBody([
                         html.Span("Vry Phase", className='voltmeter-label'),
                         html.Div(id=f'meter-{meter_id}-vry', className='voltmeter-display'),
@@ -284,7 +515,7 @@ def create_meter_layout(meter_id):
         dbc.Row([
             dbc.Col(
                 dbc.Card([
-                    dbc.CardHeader("Current Parameters"),
+                    dbc.CardHeader("Current"),
                     dbc.CardBody([
                         html.Span("Current R Phase", className='voltmeter-label'),
                         html.Div(id=f'meter-{meter_id}-cr', className='voltmeter-display'),
@@ -300,15 +531,15 @@ def create_meter_layout(meter_id):
             ),
             dbc.Col(
                 dbc.Card([
-                    dbc.CardHeader("Power Parameters"),
+                    dbc.CardHeader("Power"),
                     dbc.CardBody([
-                        html.Span("Watts R Phase", className='voltmeter-label'),
+                        html.Span("KW R Phase", className='voltmeter-label'),
                         html.Div(id=f'meter-{meter_id}-wr', className='voltmeter-display'),
-                        html.Span("Watts Y Phase", className='voltmeter-label'),
+                        html.Span("KW Y Phase", className='voltmeter-label'),
                         html.Div(id=f'meter-{meter_id}-wy', className='voltmeter-display'),
-                        html.Span("Watts B Phase", className='voltmeter-label'),
+                        html.Span("KW B Phase", className='voltmeter-label'),
                         html.Div(id=f'meter-{meter_id}-wb', className='voltmeter-display'),
-                        html.Span("Watts Total", className='voltmeter-label'),
+                        html.Span("KW Total", className='voltmeter-label'),
                         html.Div(id=f'meter-{meter_id}-wt', className='voltmeter-display')
                     ])
                 ], className="shadow-sm"),
@@ -334,15 +565,15 @@ def create_meter_layout(meter_id):
             ),
             dbc.Col(
                 dbc.Card([
-                    dbc.CardHeader("Energy Parameters"),
+                    dbc.CardHeader("Energy"),
                     dbc.CardBody([
-                        html.Span("Wh Received", className='voltmeter-label'),
+                        html.Span("KWh Received", className='voltmeter-label'),
                         html.Div(id=f'meter-{meter_id}-wh', className='voltmeter-display'),
-                        html.Span("VAh Received", className='voltmeter-label'),
+                        html.Span("KVAh Received", className='voltmeter-label'),
                         html.Div(id=f'meter-{meter_id}-vah', className='voltmeter-display'),
-                        html.Span("VARh Ind Received", className='voltmeter-label'),
+                        html.Span("KVARh Ind Received", className='voltmeter-label'),
                         html.Div(id=f'meter-{meter_id}-varhi', className='voltmeter-display'),
-                        html.Span("VARh Cap Received", className='voltmeter-label'),
+                        html.Span("KVARh Cap Received", className='voltmeter-label'),
                         html.Div(id=f'meter-{meter_id}-varhc', className='voltmeter-display')
                     ])
                 ], className="shadow-sm"),
@@ -374,13 +605,20 @@ app.layout = html.Div([
 )
 def login(n_clicks, username, password):
     if n_clicks and username and password:
-        if username in VALID_USERNAME_PASSWORD_PAIRS and VALID_USERNAME_PASSWORD_PAIRS[username] == password:
-            audit_logger.info(f"Successful login for user: {username}")
-            return True, '/', ''
-        else:
-            audit_logger.warning(f"Failed login attempt for user: {username}")
-            return False, '/login', 'Invalid username or password'
-    return False, '/login', ''
+        hashed_password = VALID_USERNAME_PASSWORD_PAIRS.get(username)
+        audit_logger.info(f"Hashed password from config: {hashed_password}")
+        audit_logger.info(f"Password from form: {password}")
+        if hashed_password:
+            try:
+                # Use werkzeug's check_password_hash instead of scrypt.dehash
+                if check_password_hash(hashed_password, password):
+                    audit_logger.info(f"Successful login for user: {username}")
+                    return True, '/', ''
+            except Exception as e:
+                audit_logger.error(f"Password verification error: {e}")
+        audit_logger.warning(f"Failed login attempt for user: {username}")
+        return False, '/login', 'Invalid username or password'
+    return dash.no_update, dash.no_update, '' 
 
 @app.callback(
     Output('page-content', 'children'),
@@ -430,6 +668,8 @@ def download_csv(n_clicks, password):
         audit_logger.error(f"Error in download_csv callback: {e}")
         return None, dbc.Alert(f"Error in download: {e}", color="danger")
 
+
+
 @app.callback(
     Output('status-summary', 'children'),
     Input('interval-component-csv', 'n_intervals')
@@ -440,8 +680,12 @@ def update_status_summary(n):
         if df.empty:
             audit_logger.warning("No status data available in update_status_summary")
             return html.Div("No status data available.")
-        status_counts = df.groupby('Meter_ID').last()['status'].value_counts()
-        comm_failed = df.groupby('Meter_ID').last()['comm_status'].eq('FAILED').sum()
+        
+        latest_readings = df.groupby('Meter_ID').last().reset_index()
+
+        status_counts = latest_readings['status'].value_counts()
+        comm_failed = latest_readings['comm_status'].eq('FAILED').sum()
+
         badges = [
             dbc.Badge(f"OK: {status_counts.get('OK', 0)}", color=RYB_COLORS['green'], className="me-1"),
             dbc.Badge(f"Power Failure: {status_counts.get('POWER_FAIL', 0)}", color=RYB_COLORS['yellow'], className="me-1"),
@@ -459,12 +703,10 @@ def update_status_summary(n):
 def update_main_csv_data(n):
     try:
         df = load_latest_csv_data()
-        # Explicitly ensure df is a DataFrame
         if not isinstance(df, pd.DataFrame):
             audit_logger.error(f"df in update_main_csv_data is not a DataFrame. Type: {type(df)}")
             return html.Div("Error: Data is not in expected format.")
 
-        audit_logger.info(f"Type of df in update_main_csv_data: {type(df)}")
         if df.empty:
             audit_logger.warning("No CSV data available for main page update")
             return html.Div("No CSV data available.")
@@ -476,13 +718,18 @@ def update_main_csv_data(n):
 
         for mid in all_meter_ids:
             meter_row = latest_readings[latest_readings['Meter_ID'] == mid]
+            audit_logger.info(f"Type of meter_row: {type(meter_row)}")
             if not meter_row.empty:
+                audit_logger.info(f"Appending meter_row.iloc[0] of type {type(meter_row.iloc[0])}")
                 display_data.append(meter_row.iloc[0])
             else:
                 dummy_row = {'Meter_ID': mid, 'comm_status': 'FAILED', 'status': 'FAILED'}
                 for param in main_params:
                     dummy_row[param] = "No data available"
+                audit_logger.info(f"Appending dummy_row of type {type(dummy_row)}")
                 display_data.append(pd.Series(dummy_row))
+            audit_logger.info(f"Type of display_data after append: {type(display_data)}")
+
 
         connected_meters_df = pd.DataFrame(display_data)
         connected_meters_df = connected_meters_df.sort_values(by='Meter_ID').reset_index(drop=True)
@@ -504,7 +751,7 @@ def update_main_csv_data(n):
         table_body = [html.Tbody(table_rows)]
         return dbc.Table(table_header + table_body, bordered=True, hover=True, responsive=True, striped=True, className="table-sm")
     except Exception as e:
-        audit_logger.error(f"Error in update_main_csv_data: {e}")
+        audit_logger.error(f"Error in update_main_csv_data: {e}", exc_info=True)
         return html.Div(f"Error loading main dashboard data: {e}")
 
 @app.callback(
@@ -581,6 +828,27 @@ def update_db_charts(n, selected_meters):
     except Exception as e:
         audit_logger.error(f"Error in update_db_charts: {e}")
         return [px.line(title=f"Error: {e}")] * 8 + [selected_meters]
+
+@app.callback(
+    Output('energy-consumption-layout', 'children'),
+    [Input('interval-component-db', 'n_intervals')]
+)
+def update_energy_consumption_layout(n):
+    try:
+        # Calculate yesterday's date
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        # Get today's date
+        today = datetime.now().strftime('%Y-%m-%d')
+        
+        # Get energy consumption data
+        yesterday_consumption = get_energy_consumption(config['db_path'], yesterday)
+        today_consumption = get_energy_consumption(config['db_path'], today)
+        
+        # Create the beautiful layout
+        return create_energy_consumption_layout(yesterday_consumption, today_consumption)
+    except Exception as e:
+        audit_logger.error(f"Error updating energy consumption layout: {e}")
+        return html.Div(f"Error loading energy consumption data: {e}", className="text-center p-4")
 
 @app.callback(
     [Output('collapse-yesterday-vll', 'is_open'),
@@ -738,4 +1006,4 @@ for meter_id in [1, 2, 3, 4, 5]:
             return (html.Div(f"Error loading data for meter {current_meter_id}: {e}"),) + ("0.00",) * 24
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=8050, dev_tools_prune_errors=True)
+    app.run(debug=True, host='0.0.0.0', port=8050, use_reloader=False)

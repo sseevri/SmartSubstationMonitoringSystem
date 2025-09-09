@@ -348,5 +348,6 @@ def main():
             ser.close()
             logging.info("Serial port closed")
 
+
 if __name__ == "__main__":
     main()

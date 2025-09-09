@@ -8,7 +8,7 @@ The **Smart Substation Monitoring System** is a web-based dashboard for real-tim
 - **Real-Time Dashboard**: Displays current readings for five meters (Transformer, EssentialLoad, NonEssentialLoad, ColonyLoad, DGSetLoad) with status indicators.
 - **Meter-Specific Pages**: Detailed parameter tables for each meter (e.g., `/meter/2` for EssentialLoad).
 - **Historical Charts**: Visualizes yesterday’s and today’s data for voltage, current, watts, and power factor using SQLite databases.
-- **Secure Access**: Basic authentication (`admin`/`password123`) and encrypted CSV download (`secure123`).
+- **Secure Access**: Basic authentication and encrypted CSV download.
 - **Audit Logging**: Tracks system events in `dashboard_audit.log`.
 - **Encrypted Configuration**: Uses `cryptography.fernet` to secure `config.json`.
 
@@ -20,7 +20,6 @@ SmartSubstationMonitoringSystem/
 ├── datalogger.py       # Handles data logging to SQLite
 ├── encrypt_config.py   # Encrypts configuration file
 ├── config.json         # Encrypted configuration
-├── config_key.key      # Encryption key
 ├── requirements.txt    # Python dependencies
 ├── start.sh            # Starts the system
 ├── stop.sh             # Stops the system
@@ -60,29 +59,16 @@ SmartSubstationMonitoringSystem/
    ```
 
 4. **Generate Encryption Key and Config**:
-   - Run `encrypt_config.py` to create `config_key.key` and `config.json`:
+   - **Important**: You must run this script first to generate the encryption key and configuration file.
      ```bash
      python3 encrypt_config.py
-     ```
-   - Ensure `config.json` contains:
-     ```json
-     {
-       "encrypted_data": "<encrypted_string>",
-       "dashboard_auth": {"admin": "password123"},
-       "download_password": "secure123",
-       "csv_file": "/home/sseevri/SmartSubstationMonitoringSystem/meter_data.csv",
-       "db_path": "/home/sseevri/SmartSubstationMonitoringSystem/daily_data.db",
-       "db_daily_path": "/home/sseevri/SmartSubstationMonitoringSystem/daily_data.db",
-       "audit_log_file": "/home/sseevri/SmartSubstationMonitoringSystem/dashboard_audit.log"
-     }
      ```
 
 5. **Set File Permissions**:
    ```bash
-   sudo chown sseevri:sseevri /home/sseevri/SmartSubstationMonitoringSystem/*
    chmod 644 /home/sseevri/SmartSubstationMonitoringSystem/*.py
    chmod 644 /home/sseevri/SmartSubstationMonitoringSystem/config.json
-   chmod 644 /home/sseevri/SmartSubstationMonitoringSystem/config_key.key
+   chmod 600 /home/sseevri/SmartSubstationMonitoringSystem/config_key.key
    chmod 664 /home/sseevri/SmartSubstationMonitoringSystem/meter_data.csv
    chmod 664 /home/sseevri/SmartSubstationMonitoringSystem/daily_data.db
    chmod 755 /home/sseevri/SmartSubstationMonitoringSystem/start.sh

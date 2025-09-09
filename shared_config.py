@@ -88,3 +88,35 @@ METER_NAMES = {
     4: "ColonyLoad",
     5: "DGSetLoad"
 }
+
+from cryptography.fernet import Fernet
+import json
+import os
+import sys
+
+def load_config():
+    key_file = '/home/sseevri/SmartSubstationMonitoringSystem/config_key.key'
+    config_file = '/home/sseevri/SmartSubstationMonitoringSystem/config.json'
+
+    if not os.path.exists(key_file):
+        print(f"Error: Encryption key file not found at {key_file}.", file=sys.stderr)
+        print("Please run encrypt_config.py first to generate the key and configuration.", file=sys.stderr)
+        sys.exit(1)
+
+    if not os.path.exists(config_file):
+        print(f"Error: Configuration file not found at {config_file}.", file=sys.stderr)
+        print("Please run encrypt_config.py first to generate the key and configuration.", file=sys.stderr)
+        sys.exit(1)
+
+    with open(key_file, 'rb') as f:
+        key = f.read()
+    
+    cipher = Fernet(key)
+    
+    with open(config_file, 'r') as f:
+        encrypted_data = json.load(f)
+    
+    decrypted_data = cipher.decrypt(encrypted_data['encrypted_data'].encode()).decode()
+    return json.loads(decrypted_data)
+
+config = load_config()

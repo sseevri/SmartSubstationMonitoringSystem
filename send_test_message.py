@@ -1,0 +1,2 @@
+from whatsapp_sender import send_scheduled_message
+send_scheduled_message()
