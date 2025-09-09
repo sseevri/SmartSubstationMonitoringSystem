@@ -159,3 +159,8 @@ meter_data.csv
 config_key.key
 assets/*.png
 assets/*.jpg
+# Sensitive configs
+config.json
+encrypt_config.py
+config.json
+encrypt_config.py
