@@ -2,52 +2,49 @@
 
 ## Overview
 
-The **Smart Substation Monitoring System** is a web-based dashboard for real-time monitoring of electrical substations. Built using [Plotly Dash](https://dash.plotly.com/), it runs on a Raspberry Pi and displays meter data (e.g., voltage, current, power factor) from multiple meters, sourced from `meter_data.csv` and `daily_data.db`. The system supports secure access, data visualization, CSV export, Telegram alerts, and audit logging.
+The **Smart Substation Monitoring System** is a web-based dashboard for real-time monitoring of electrical substations. Built using [Plotly Dash](https://dash.plotly.com/), it runs on a Raspberry Pi and displays meter data (e.g., voltage, current, power factor) from multiple meters, sourced from a local SQLite database. The system supports secure user authentication, historical data visualization, encrypted CSV downloads, and Telegram alerts.
 
-### Features
-- **Real-Time Dashboard**: Displays current readings for five meters (Transformer, EssentialLoad, NonEssentialLoad, ColonyLoad, DGSetLoad) with status indicators.  
-- **Meter-Specific Pages**: Detailed parameter tables for each meter (e.g., `/meter/2` for EssentialLoad).  
-- **Historical Charts**: Visualizes yesterday’s and today’s data for voltage, current, watts, and power factor using SQLite databases.  
-- **Secure Access**: Basic authentication and encrypted CSV download.  
-- **Audit Logging**: Tracks system events in `dashboard_audit.log`.  
-- **Telegram Bot Integration**: Sends real-time alerts and periodic meter readings to a Telegram group or private chat.  
-- **Encrypted Configuration (local only)**: Sensitive configs are excluded from GitHub and must be maintained securely on the Raspberry Pi.  
+## Features
+- **Real-Time Dashboard**: Displays live summary readings for five key meters (Transformer, EssentialLoad, NonEssentialLoad, ColonyLoad, DGSetLoad).
+- **Meter-Specific Pages**: Provides detailed, real-time parameter tables for each individual meter.
+- **Historical Charts**:
+    - Visualizes yesterday’s and today’s data on the main dashboard for key parameters like Voltage, Total Current, and Power.
+    - **New:** Displays stacked yesterday-vs-today charts for R, Y, and B phase currents on each individual meter page for detailed comparison.
+- **Secure Access**: Features user login for the dashboard and a separate, encrypted password for CSV data downloads.
+- **Encrypted Configuration**: All sensitive information, including passwords and API keys, is stored in an encrypted `config.json` file, which is not tracked by Git.
+- **Data Logging**: Persistently logs all meter data to a local SQLite database.
+- **Telegram Bot Integration**: Capable of sending alerts and periodic updates.
+- **Audit Logging**: Tracks user logins and other important system events in `dashboard_audit.log`.
 
 ---
 
 ## Repository Structure
 ```
 SmartSubstationMonitoringSystem/
-├── app.py                 # Dash application for the web dashboard
-├── DMF_Reader.py          # Reads meter data and updates CSV/database
-├── datalogger.py          # Handles data logging to SQLite
-├── requirements.txt       # Python dependencies
-├── telegram_meter_bot.py  # Telegram bot for sending alerts
-├── send_test_message.py   # Script to test Telegram bot messages
-├── a7670c.py              # GSM module integration (A7670C)
-├── anomaly_detector.py    # Detects anomalies in meter readings
-├── docs/                  # Documentation folder
-│   ├── equipment_specs.txt
-│   └── maintenance_procedures.txt
-├── meter_data.csv         # Stores real-time meter data
-├── daily_data.db          # SQLite database for daily data
-├── app.log                # Application logs
-├── dashboard_audit.log    # Audit logs
-├── modbus_reader.log      # Modbus communication logs
-└── ngrok.log              # ngrok tunneling logs
+├── app.py                 # Main Dash application for the web dashboard.
+├── datalogger.py          # Handles data logging to the SQLite database.
+├── DMF_Reader.py          # Reads raw data from meters.
+├── requirements.txt       # Python package dependencies.
+├── encrypt_config.py      # Script to encrypt config.json and generate a key.
+├── shared_config.py       # Contains shared variables like register maps.
+├── telegram_meter_bot.py  # Logic for the Telegram bot.
+├── anomaly_detector.py    # Module for detecting anomalies in meter readings.
+├── assets/                # CSS and other static assets.
+├── docs/                  # Project documentation.
+├── config.json            # (Encrypted) Stores all configuration, passwords, and keys.
+├── config_key.key         # The key to decrypt config.json. (Must be kept secure!)
+└── venv/                  # Python virtual environment folder.
 ```
-
-⚠️ Note: Sensitive files like `config.json` and `encrypt_config.py` are **no longer tracked** in GitHub for security reasons.  
+⚠️ **Security Note**: `config.json` (once encrypted) and `config_key.key` are highly sensitive and are excluded from Git via `.gitignore`. They must be managed securely on the device running the application.
 
 ---
 
 ## Prerequisites
-- **Hardware**: Raspberry Pi (e.g., Raspberry Pi 4) with Raspberry Pi OS.  
-- **Software**:  
-  - Python 3.8+  
-  - Virtualenv  
-  - ngrok (optional, for remote access)  
-- **Dependencies**: Listed in `requirements.txt`.  
+- **Hardware**: Raspberry Pi (e.g., Raspberry Pi 4) or other Linux-based system.
+- **Software**:
+  - Python 3.9+
+  - `python3-venv`
+  - `libssl-dev` (for compiling the `scrypt` dependency)
 
 ---
 
@@ -55,133 +52,102 @@ SmartSubstationMonitoringSystem/
 
 1. **Clone the Repository**:
    ```bash
-   git clone git@github.com:<your-username>/SmartSubstationMonitoringSystem.git
+   git clone <your-repository-url>
    cd SmartSubstationMonitoringSystem
    ```
 
-2. **Set Up Virtual Environment**:
+2. **Install System Dependencies**:
+   *(This is a crucial step to ensure Python packages can be installed correctly)*
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y libssl-dev
+   ```
+
+3. **Set Up Virtual Environment**:
    ```bash
    python3 -m venv venv
    source venv/bin/activate
    ```
 
-3. **Install Dependencies**:
+4. **Install Python Dependencies**:
    ```bash
    pip install -r requirements.txt
    ```
 
-4. **Configure Telegram Bot**:
-   - Create a bot via [BotFather](https://t.me/botfather) on Telegram.  
-   - Get the **bot token** and your **chat ID** (use [@userinfobot](https://t.me/userinfobot) for user chat ID or add bot to a group and check logs).  
-   - Create a **local config file** `config.json` (not stored in GitHub) with:
-     ```json
-     {
-       "telegram_token": "YOUR_BOT_TOKEN",
-       "chat_id": "YOUR_GROUP_OR_USER_CHAT_ID"
-     }
-     ```
-   - Test it:
-     ```bash
-     python3 send_test_message.py
-     ```
+5. **Create and Encrypt Configuration**:
+    a. Create a new file named `config.json` and paste the following template into it.
+    b. **Fill in your actual values** for passwords, API keys, and paths. Use plain-text for the passwords in this step; the script will hash them.
 
-5. **Initialize Data**:
-   ```bash
-   python3 DMF_Reader.py
-   ```
+    ```json
+    {
+      "serial_port": "/dev/ttyACM0",
+      "baud_rate": 9600,
+      "serial_timeout": 3,
+      "polling_interval": 30,
+      "sqlite_log_interval": 1800,
+      "meter_ids": [1, 2, 3, 4, 5],
+      "csv_file": "/home/sseevri/SmartSubstationMonitoringSystem/meter_data.csv",
+      "db_path": "/home/sseevri/SmartSubstationMonitoringSystem/meter_data_1year.db",
+      "db_daily_path": "/home/sseevri/SmartSubstationMonitoringSystem/meter_data_daily.db",
+      "log_file": "/home/sseevri/SmartSubstationMonitoringSystem/modbus_reader.log",
+      "audit_log_file": "/home/sseevri/SmartSubstationMonitoringSystem/dashboard_audit.log",
+      "dashboard_auth": {
+        "admin": "your_dashboard_password"
+      },
+      "download_password": "your_csv_download_password",
+      "whatsapp_api_url": "http://localhost:3000",
+      "whatsapp_group_id": "YOUR_WHATSAPP_GROUP_ID",
+      "whatsapp_group_name": "IoT_SS_VRI",
+      "whatsapp_log_file": "/home/sseevri/SmartSubstationMonitoringSystem/whatsapp_bot.log",
+      "whatsapp_server_url": "http://localhost:8002",
+      "document_paths": [
+        "/home/sseevri/SmartSubstationMonitoringSystem/docs/substation_manual.pdf",
+        "/home/sseevri/SmartSubstationMonitoringSystem/docs/maintenance_procedures.txt",
+        "/home/sseevri/SmartSubstationMonitoringSystem/docs/equipment_specs.csv"
+      ],
+      "ollama_model": "tinyllama"
+    }
+    ```
 
-6. **Set File Permissions (recommended)**:
-   ```bash
-   chmod 600 config.json
-   chmod 644 *.py
-   chmod 664 meter_data.csv daily_data.db
-   ```
-
-7. **(Optional) Set Up Systemd Service**:
-   ```ini
-   [Unit]
-   Description=Smart Substation Monitoring System
-   After=network.target
-
-   [Service]
-   User=sseevri
-   WorkingDirectory=/home/sseevri/SmartSubstationMonitoringSystem
-   ExecStart=/usr/bin/python3 app.py
-   Restart=always
-
-   [Install]
-   WantedBy=multi-user.target
-   ```
-   Enable and start:
-   ```bash
-   sudo systemctl enable smart-substation.service
-   sudo systemctl start smart-substation.service
-   ```
-
-8. **(Optional) Set Up ngrok**:
-   ```bash
-   ngrok http 8050 > ngrok.log 2>&1 &
-   ```
+    c. Run the encryption script. This will generate `config_key.key` and overwrite `config.json` with an encrypted version.
+    ```bash
+    python encrypt_config.py
+    ```
+    **Important:** Keep `config_key.key` safe. If you lose it, you will not be able to decrypt your configuration.
 
 ---
 
 ## Usage
 
-1. **Start the System**:
+1. **Activate the Environment**:
    ```bash
    source venv/bin/activate
-   python3 app.py
    ```
 
-2. **Access the Dashboard**:
-   - Local: [http://127.0.0.1:8050](http://127.0.0.1:8050)  
-   - Remote: Use the ngrok URL from `ngrok.log`  
-
-3. **Telegram Alerts**:
-   - System will automatically send hourly readings and anomaly alerts.  
-
-4. **Stop the System**:
+2. **Start the Monitoring Dashboard**:
    ```bash
-   pkill -f app.py
+   python app.py
    ```
+
+3. **Access the Dashboard**:
+   - Open a web browser and go to `http://<your-raspberry-pi-ip>:8050`
 
 ---
 
 ## Versioning
-- **v1.0 (Current)**:  
-  - Added Telegram bot integration.  
-  - Added anomaly detection module.  
-  - Cleaned repository to exclude sensitive files.  
+- **v1.1.0 (Current)**:
+  - Added historical phase current charts to individual meter pages.
+  - Refactored data-fetching and fixed bugs in datalogger.
+- **v1.0**:
+  - Initial release with Telegram bot integration and anomaly detection.
 
 ---
 
 ## Troubleshooting
-- **Telegram Bot Not Sending**:  
-  - Verify `telegram_token` and `chat_id` in `config.json`.  
-  - Run `python3 send_test_message.py` for debugging.  
-
-- **Dashboard Issues**:  
-  - Check `app.log`, `dashboard_audit.log`, and `modbus_reader.log`.  
-
-- **Database Issues**:  
-  - Verify `meter_data.csv` and `daily_data.db` exist.  
-  - Regenerate with `python3 DMF_Reader.py`.  
-
----
-
-## Contributing
-1. Fork the repository.  
-2. Create a feature branch (`git checkout -b feature/YourFeature`).  
-3. Commit changes (`git commit -m "Add YourFeature"`).  
-4. Push to the branch (`git push origin feature/YourFeature`).  
-5. Open a Pull Request.  
+- **Installation Error for `scrypt`**: If you see an error about `openssl/aes.h` not being found, you are missing the system dependency. Run `sudo apt-get install -y libssl-dev`.
+- **Dashboard Issues**: Check `app.log` and `dashboard_audit.log` for errors.
 
 ---
 
 ## License
-This project is licensed under the MIT License.  
-
----
-
-## Contact
-For issues or questions, open an issue on GitHub or contact the repository owner.  
+This project is licensed under the MIT License.
