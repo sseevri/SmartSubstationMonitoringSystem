@@ -165,14 +165,14 @@ def get_yesterday_data(db_path):
         start_time = f"{yesterday} 00:00:00"
         end_time = f"{yesterday} 23:59:00"
         query = f"""
-        SELECT DateTime, Date, Time, Meter_ID, "VLL Average", "Current Total", "Watts Total", "PF Average Received"
+        SELECT DateTime, Date, Time, Meter_ID, "VLL Average", "Current Total", "Watts Total", "PF Average Received", "Current R phase", "Current Y phase", "Current B phase"
         FROM meter_readings
         WHERE DateTime BETWEEN ? AND ?
         """
         df = pd.read_sql_query(query, conn, params=(start_time, end_time))
         conn.close()
         # Ensure non-negative values
-        for col in ["VLL Average", "Current Total", "Watts Total", "PF Average Received"]:
+        for col in ["VLL Average", "Current Total", "Watts Total", "PF Average Received", "Current R phase", "Current Y phase", "Current B phase"]:
             if col in df.columns:
                 df[col] = df[col].clip(lower=0)
         return df
@@ -186,14 +186,14 @@ def get_today_data(db_path):
         conn = sqlite3.connect(db_path)
         today = datetime.now().date().strftime('%Y-%m-%d')
         query = """
-        SELECT DateTime, Date, Time, Meter_ID, "VLL Average", "Current Total", "Watts Total", "PF Average Received"
+        SELECT DateTime, Date, Time, Meter_ID, "VLL Average", "Current Total", "Watts Total", "PF Average Received", "Current R phase", "Current Y phase", "Current B phase"
         FROM meter_readings
         WHERE DATE(DateTime) = ?
         """
         df = pd.read_sql_query(query, conn, params=(today,))
         conn.close()
         # Ensure non-negative values
-        for col in ["VLL Average", "Current Total", "Watts Total", "PF Average Received"]:
+        for col in ["VLL Average", "Current Total", "Watts Total", "PF Average Received", "Current R phase", "Current Y phase", "Current B phase"]:
             if col in df.columns:
                 df[col] = df[col].clip(lower=0)
         return df

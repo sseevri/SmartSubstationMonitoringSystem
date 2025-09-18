@@ -580,6 +580,10 @@ def create_meter_layout(meter_id):
                 className="col-12 col-md-6 mb-4"
             )
         ]),
+        dbc.Row([
+            dbc.Col(dcc.Graph(id=f'meter-{meter_id}-yesterday-current-chart'), width=12),
+            dbc.Col(dcc.Graph(id=f'meter-{meter_id}-today-current-chart'), width=12)
+        ]),
         dcc.Interval(
             id=f'interval-meter-{meter_id}',
             interval=10*1000,
@@ -1004,6 +1008,62 @@ for meter_id in [1, 2, 3, 4, 5]:
         except Exception as e:
             audit_logger.error(f"Error in update_meter_data for meter {current_meter_id}: {e}")
             return (html.Div(f"Error loading data for meter {current_meter_id}: {e}"),) + ("0.00",) * 24
+
+    @app.callback(
+        [Output(f'meter-{meter_id}-yesterday-current-chart', 'figure'),
+         Output(f'meter-{meter_id}-today-current-chart', 'figure')],
+        [Input(f'interval-meter-{meter_id}', 'n_intervals')]
+    )
+    def update_meter_current_charts(n, current_meter_id=meter_id):
+        try:
+            df_yesterday = get_yesterday_data(config['db_path'])
+            df_today = get_today_data(config['db_path'])
+
+            # Filter for the specific meter
+            df_yesterday = df_yesterday[df_yesterday['Meter_ID'] == current_meter_id]
+            df_today = df_today[df_today['Meter_ID'] == current_meter_id]
+
+            # Define 24h ranges for consistent axes
+            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_end = today_start + timedelta(days=1)
+            yesterday_start = today_start - timedelta(days=1)
+            yesterday_end = today_start
+
+            current_cols = ["Current R phase", "Current Y phase", "Current B phase"]
+            
+            fig_yesterday = px.line(title=f"Yesterday's Phase Currents: No Data")
+            if not df_yesterday.empty:
+                df_yesterday_melted = df_yesterday.melt(id_vars=['DateTime'], value_vars=current_cols, var_name='Phase', value_name='Current')
+                fig_yesterday = px.line(
+                    df_yesterday_melted,
+                    x='DateTime',
+                    y='Current',
+                    color='Phase',
+                    title=f"Yesterday's Phase Currents",
+                    labels={'DateTime': 'Time', 'Current': 'Amps', 'Phase': 'Phase'},
+                    color_discrete_map=PHASE_COLORS
+                )
+                fig_yesterday.update_layout(hovermode='x unified', xaxis_range=[yesterday_start, yesterday_end])
+
+            fig_today = px.line(title=f"Today's Phase Currents: No Data")
+            if not df_today.empty:
+                df_today_melted = df_today.melt(id_vars=['DateTime'], value_vars=current_cols, var_name='Phase', value_name='Current')
+                fig_today = px.line(
+                    df_today_melted,
+                    x='DateTime',
+                    y='Current',
+                    color='Phase',
+                    title=f"Today's Phase Currents",
+                    labels={'DateTime': 'Time', 'Current': 'Amps', 'Phase': 'Phase'},
+                    color_discrete_map=PHASE_COLORS
+                )
+                fig_today.update_layout(hovermode='x unified', xaxis_range=[today_start, today_end])
+
+            return fig_yesterday, fig_today
+
+        except Exception as e:
+            audit_logger.error(f"Error in update_meter_current_charts for meter {current_meter_id}: {e}")
+            return [px.line(title=f"Error: {e}")] * 2
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=8050, use_reloader=False)
